@@ -16,7 +16,11 @@ export default function ScannedItemCard({ item, onRemove }: Props) {
         borderColor: "divider",
       }}
     >
-      <Stack direction="row" alignItems="center" justifyContent="space-between" spacing={2}>
+      <Stack
+        direction="row"
+        spacing={2}
+        sx={{ alignItems: "center", justifyContent: "space-between" }}
+      >
         <Typography fontWeight={500}>{item.name}</Typography>
         <Button onClick={onRemove} color="error" size="small">
           Remove

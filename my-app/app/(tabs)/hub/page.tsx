@@ -1,11 +1,11 @@
-import { Box, Container, Stack, Typography } from "@mui/material";
+import { Container, Stack, Typography } from "@mui/material";
 import HubTile from "@/components/hub/HubTile";
-import NavBar from "@/components/layout/NavBar";
+import PageHeader from "@/components/layout/PageHeader";
 
 export default function HubPage() {
   return (
-    <Box sx={{ minHeight: "100dvh", bgcolor: "background.default" }}>
-      <NavBar title="Home" />
+    <>
+      <PageHeader title="Home" />
 
       <Container maxWidth="sm" sx={{ py: 4 }}>
         <Stack spacing={3}>
@@ -35,6 +35,6 @@ export default function HubPage() {
           </Stack>
         </Stack>
       </Container>
-    </Box>
+    </>
   );
 }

@@ -1,5 +1,5 @@
-import { Box, Container, Stack, Toolbar, Typography } from "@mui/material";
-import BackButton from "@/components/layout/BackButton";
+import { Container, Stack, Typography } from "@mui/material";
+import PageHeader from "@/components/layout/PageHeader";
 import RecipeCard from "@/components/recipes/RecipeCard";
 import { getRecommendedRecipes } from "@/lib/api/recipes";
 
@@ -7,13 +7,8 @@ export default async function RecommendationsPage() {
   const recipes = await getRecommendedRecipes();
 
   return (
-    <Box sx={{ minHeight: "100dvh", bgcolor: "background.default" }}>
-      <Toolbar sx={{ gap: 1.5 }}>
-        <BackButton />
-        <Typography variant="h6" fontWeight={500}>
-          Recommended for you
-        </Typography>
-      </Toolbar>
+    <>
+      <PageHeader title="Recommended for you" />
 
       <Container maxWidth="sm" sx={{ py: 2 }}>
         {recipes.length === 0 ? (
@@ -33,6 +28,6 @@ export default async function RecommendationsPage() {
           </Stack>
         )}
       </Container>
-    </Box>
+    </>
   );
 }

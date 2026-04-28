@@ -14,7 +14,7 @@ export default function HubTile({ href, title, subtitle, emoji }: HubTileProps) 
   return (
     <Card variant="outlined" sx={{ borderColor: "divider" }}>
       <CardActionArea component={Link} href={href} sx={{ p: 2.5 }}>
-        <Stack direction="row" spacing={2} alignItems="center">
+        <Stack direction="row" spacing={2} sx={{ alignItems: "center" }}>
           <Box
             sx={{
               width: 48,
