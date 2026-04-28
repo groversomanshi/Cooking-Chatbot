@@ -21,7 +21,16 @@ export default function ScannedItemCard({ item, onRemove }: Props) {
         spacing={2}
         sx={{ alignItems: "center", justifyContent: "space-between" }}
       >
-        <Typography fontWeight={500}>{item.name}</Typography>
+        <Stack sx={{ minWidth: 0, flex: 1 }}>
+          <Typography fontWeight={500} noWrap>
+            {item.name}
+          </Typography>
+          {item.quantity && (
+            <Typography variant="body2" color="text.secondary" noWrap>
+              {item.quantity}
+            </Typography>
+          )}
+        </Stack>
         <Button onClick={onRemove} color="error" size="small">
           Remove
         </Button>

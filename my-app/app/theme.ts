@@ -20,7 +20,7 @@ const theme = createTheme({
       primary: "#ededed",
       secondary: "#b3b3b3",
     },
-    divider: "rgba(0, 0, 0, 0.08)",
+    divider: "rgba(255, 255, 255, 0.12)",
   },
   shape: {
     borderRadius: 12,
