@@ -1,19 +1,72 @@
+"use client";
+
+import { use, useEffect, useState } from "react";
 import { notFound } from "next/navigation";
 import Image from "next/image";
-import { Box, Container, Stack, Typography } from "@mui/material";
+import { Alert, Box, Container, Stack, Typography } from "@mui/material";
 import PageHeader from "@/components/layout/PageHeader";
 import FavoriteButton from "@/components/recipes/FavoriteButton";
 import { getRecipeById } from "@/lib/api/recipes";
+import type { Recipe } from "@/types/recipe";
 
-export default async function RecipeDetailPage({
+export default function RecipeDetailPage({
   params,
 }: {
   params: Promise<{ id: string }>;
 }) {
-  const { id } = await params;
-  const recipe = await getRecipeById(id);
+  const { id } = use(params);
+  const [recipe, setRecipe] = useState<Recipe | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
 
-  if (!recipe) notFound();
+  useEffect(() => {
+    let cancelled = false;
+    setLoading(true);
+    getRecipeById(id)
+      .then((r) => {
+        if (cancelled) return;
+        if (!r) {
+          notFound();
+          return;
+        }
+        setRecipe(r);
+      })
+      .catch((e: unknown) => {
+        if (!cancelled) {
+          setError(e instanceof Error ? e.message : "Failed to load recipe");
+        }
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [id]);
+
+  if (error) {
+    return (
+      <Box sx={{ minHeight: "100dvh", bgcolor: "background.default" }}>
+        <PageHeader showBack />
+        <Container maxWidth="sm" sx={{ py: 3 }}>
+          <Alert severity="error">{error}</Alert>
+        </Container>
+      </Box>
+    );
+  }
+
+  if (loading || !recipe) {
+    return (
+      <Box sx={{ minHeight: "100dvh", bgcolor: "background.default" }}>
+        <PageHeader showBack />
+        <Container maxWidth="sm" sx={{ py: 3 }}>
+          <Typography variant="body2" color="text.secondary" align="center">
+            Loading…
+          </Typography>
+        </Container>
+      </Box>
+    );
+  }
 
   return (
     <Box sx={{ minHeight: "100dvh", bgcolor: "background.default" }}>
@@ -45,9 +98,11 @@ export default async function RecipeDetailPage({
             <Typography variant="h4" fontWeight={600} letterSpacing="-0.02em">
               {recipe.title}
             </Typography>
-            <Typography variant="body2" color="text.secondary">
-              {recipe.description}
-            </Typography>
+            {recipe.description && (
+              <Typography variant="body2" color="text.secondary">
+                {recipe.description}
+              </Typography>
+            )}
           </Stack>
 
           <Stack spacing={1}>

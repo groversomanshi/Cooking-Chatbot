@@ -3,8 +3,11 @@
 import { useState } from "react";
 import Link from "next/link";
 import {
+  Alert,
   Box,
   Button,
+  Card,
+  CardContent,
   Container,
   IconButton,
   Stack,
@@ -12,17 +15,20 @@ import {
 } from "@mui/material";
 import AddIcon from "@mui/icons-material/Add";
 import CameraAltIcon from "@mui/icons-material/CameraAlt";
+import DeleteOutlineIcon from "@mui/icons-material/DeleteOutlined";
 import PageHeader from "@/components/layout/PageHeader";
 import AddIngredientDialog from "@/components/pantry/AddIngredientDialog";
-import ScannedItemCard from "@/components/scanned/ScannedItemCard";
-import { useScannedItems } from "@/hooks/useScannedItems";
+import { usePantry } from "@/context/PantryContext";
+import { useAuth } from "@/hooks/useAuth";
+import type { Ingredient } from "@/types/ingredient";
 
 export default function PantryPage() {
-  const { items, addItems, removeItem } = useScannedItems();
+  const { user, loading: authLoading } = useAuth();
+  const { items, loading, error, addIds, removeId } = usePantry();
   const [addOpen, setAddOpen] = useState(false);
 
-  function handleAdd({ name, quantity }: { name: string; quantity?: string }) {
-    addItems([{ id: crypto.randomUUID(), name, quantity }]);
+  async function handleAdd(ingredient: Ingredient) {
+    await addIds([ingredient.ingredientId]);
   }
 
   return (
@@ -43,6 +49,7 @@ export default function PantryPage() {
               onClick={() => setAddOpen(true)}
               aria-label="Add ingredient manually"
               color="primary"
+              disabled={!user}
             >
               <AddIcon />
             </IconButton>
@@ -60,7 +67,22 @@ export default function PantryPage() {
       />
 
       <Container maxWidth="sm" sx={{ flex: 1, py: 2 }}>
-        {items.length === 0 ? (
+        {!user && !authLoading ? (
+          <Alert severity="info">
+            <Stack direction="row" spacing={1} alignItems="center">
+              <Typography variant="body2">Log in to view your pantry.</Typography>
+              <Button component={Link} href="/login" size="small">
+                Log in
+              </Button>
+            </Stack>
+          </Alert>
+        ) : error ? (
+          <Alert severity="error">{error}</Alert>
+        ) : loading ? (
+          <Typography variant="body2" color="text.secondary" align="center" sx={{ py: 6 }}>
+            Loading your pantry…
+          </Typography>
+        ) : items.length === 0 ? (
           <Stack spacing={2} sx={{ alignItems: "center", py: 8 }}>
             <Typography variant="body2" color="text.secondary" align="center">
               Your pantry is empty.
@@ -88,11 +110,33 @@ export default function PantryPage() {
         ) : (
           <Stack spacing={1}>
             {items.map((item) => (
-              <ScannedItemCard
-                key={item.id}
-                item={item}
-                onRemove={() => removeItem(item.id)}
-              />
+              <Card key={item.ingredientId} variant="outlined" sx={{ borderColor: "divider" }}>
+                <CardContent
+                  sx={{
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "space-between",
+                    py: 1.5,
+                    "&:last-child": { pb: 1.5 },
+                  }}
+                >
+                  <Stack>
+                    <Typography>{item.name}</Typography>
+                    {item.restrictions && item.restrictions.length > 0 && (
+                      <Typography variant="caption" color="text.secondary">
+                        {item.restrictions.join(", ")}
+                      </Typography>
+                    )}
+                  </Stack>
+                  <IconButton
+                    edge="end"
+                    aria-label={`Remove ${item.name}`}
+                    onClick={() => removeId(item.ingredientId)}
+                  >
+                    <DeleteOutlineIcon />
+                  </IconButton>
+                </CardContent>
+              </Card>
             ))}
           </Stack>
         )}

@@ -1,26 +1,50 @@
 "use client";
 
+import { useState } from "react";
 import { useRouter } from "next/navigation";
-import { Box, Button, Stack, Typography } from "@mui/material";
+import { Alert, Box, Button, Stack, Typography } from "@mui/material";
 import { useCamera } from "@/hooks/useCamera";
-import { useScannedItems } from "@/hooks/useScannedItems";
+import { useScannedItems } from "@/context/ScannedContext";
+import { resolveIngredientNames } from "@/lib/api/ingredients";
+import type { ScannedItem } from "@/types/ingredient";
+
+// TODO: replace with real model output. For now this stub asks the DB whether
+// these names exist so the resulting ScannedItem has a real ingredientId.
+const STUB_DETECTED_NAMES = ["tomato", "onion"];
 
 export default function CameraView() {
   const router = useRouter();
   const { videoRef, captureFrame, ready } = useCamera();
   const { addItems } = useScannedItems();
+  const [error, setError] = useState<string | null>(null);
+  const [pending, setPending] = useState(false);
 
   async function handleCapture() {
-    const frame = await captureFrame();
-    if (!frame) return;
+    setError(null);
+    setPending(true);
+    try {
+      const frame = await captureFrame();
+      if (!frame) return;
 
-    const detected = [
-      { id: crypto.randomUUID(), name: "Tomato" },
-      { id: crypto.randomUUID(), name: "Onion" },
-    ];
+      const matched = await resolveIngredientNames(STUB_DETECTED_NAMES);
+      const matchedByName = new Map(matched.map((m) => [m.name.toLowerCase(), m]));
 
-    addItems(detected);
-    router.push("/scanned");
+      const detected: ScannedItem[] = STUB_DETECTED_NAMES.map((name) => {
+        const hit = matchedByName.get(name.toLowerCase());
+        return {
+          id: crypto.randomUUID(),
+          name: hit?.name ?? name,
+          ingredientId: hit?.ingredientId,
+        };
+      });
+
+      addItems(detected);
+      router.push("/scanned");
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Capture failed");
+    } finally {
+      setPending(false);
+    }
   }
 
   return (
@@ -60,14 +84,16 @@ export default function CameraView() {
         )}
       </Box>
 
+      {error && <Alert severity="error">{error}</Alert>}
+
       <Button
         onClick={handleCapture}
-        disabled={!ready}
+        disabled={!ready || pending}
         variant="contained"
         size="large"
         sx={{ borderRadius: 999, py: 1.75 }}
       >
-        Capture
+        {pending ? "Processing…" : "Capture"}
       </Button>
     </Stack>
   );

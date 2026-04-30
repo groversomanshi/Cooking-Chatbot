@@ -10,15 +10,25 @@ export default function SignupForm() {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState<string | null>(null);
+  const [info, setInfo] = useState<string | null>(null);
   const [pending, setPending] = useState(false);
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
     setError(null);
+    setInfo(null);
     setPending(true);
     try {
-      await signUp(email, password);
-      router.push("/hub");
+      const result = await signUp(email, password);
+      if (result.hasSession) {
+        router.push("/hub");
+      } else if (result.needsEmailConfirmation) {
+        setInfo(
+          `We sent a confirmation link to ${email}. Click it, then come back and log in.`,
+        );
+      } else {
+        setError("Signup didn't return a user. Check the Supabase auth settings.");
+      }
     } catch (err) {
       setError(err instanceof Error ? err.message : "Signup failed");
     } finally {
@@ -51,6 +61,7 @@ export default function SignupForm() {
         />
 
         {error && <Alert severity="error">{error}</Alert>}
+        {info && <Alert severity="success">{info}</Alert>}
 
         <Button
           type="submit"

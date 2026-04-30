@@ -1,31 +1,12 @@
-// Browser-side Supabase client.
-//
-// TODO: once `@supabase/supabase-js` is installed, replace this dev stub:
-//   import { createClient } from "@supabase/supabase-js";
-//   export const supabase = createClient(
-//     process.env.NEXT_PUBLIC_SUPABASE_URL!,
-//     process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
-//   );
-//
-// Until then, this stub pretends every login/signup succeeds so you can
-// click through the app. Any email + password works.
+import { createBrowserClient } from "@supabase/ssr";
 
-const FAKE_USER = {
-  id: "dev-user",
-  email: "you@example.com",
-};
+const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
+const key = process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY;
 
-export const supabase = {
-  auth: {
-    signInWithPassword: async (_: { email: string; password: string }) => ({
-      data: { user: FAKE_USER, session: { user: FAKE_USER } },
-      error: null,
-    }),
-    signUp: async (_: { email: string; password: string }) => ({
-      data: { user: FAKE_USER, session: { user: FAKE_USER } },
-      error: null,
-    }),
-    signOut: async () => ({ error: null }),
-    getUser: async () => ({ data: { user: FAKE_USER }, error: null }),
-  },
-};
+if (!url || !key) {
+  throw new Error(
+    "Missing Supabase env vars. Set NEXT_PUBLIC_SUPABASE_URL and NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY in my-app/.env.local",
+  );
+}
+
+export const supabase = createBrowserClient(url, key);

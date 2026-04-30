@@ -1,8 +1,10 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import {
+  Autocomplete,
   Button,
+  CircularProgress,
   Dialog,
   DialogActions,
   DialogContent,
@@ -10,38 +12,73 @@ import {
   Stack,
   TextField,
 } from "@mui/material";
+import { searchIngredients } from "@/lib/api/ingredients";
+import type { Ingredient } from "@/types/ingredient";
 
 type Props = {
   open: boolean;
   onClose: () => void;
-  onAdd: (item: { name: string; quantity?: string }) => void;
+  /** Receives the matched ingredient row (so the caller has the bigint id). */
+  onAdd: (ingredient: Ingredient) => void | Promise<void>;
 };
 
 export default function AddIngredientDialog({ open, onClose, onAdd }: Props) {
-  const [name, setName] = useState("");
-  const [quantity, setQuantity] = useState("");
+  const [input, setInput] = useState("");
+  const [options, setOptions] = useState<Ingredient[]>([]);
+  const [selected, setSelected] = useState<Ingredient | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [submitting, setSubmitting] = useState(false);
+
+  useEffect(() => {
+    if (!open) return;
+    const q = input.trim();
+    if (!q) {
+      setOptions([]);
+      return;
+    }
+    let cancelled = false;
+    setLoading(true);
+    const handle = setTimeout(() => {
+      searchIngredients(q)
+        .then((rows) => {
+          if (!cancelled) setOptions(rows);
+        })
+        .catch(() => {
+          if (!cancelled) setOptions([]);
+        })
+        .finally(() => {
+          if (!cancelled) setLoading(false);
+        });
+    }, 200);
+    return () => {
+      cancelled = true;
+      clearTimeout(handle);
+    };
+  }, [input, open]);
 
   function reset() {
-    setName("");
-    setQuantity("");
+    setInput("");
+    setSelected(null);
+    setOptions([]);
   }
 
   function handleClose() {
+    if (submitting) return;
     reset();
     onClose();
   }
 
-  function handleSubmit(e: React.FormEvent) {
+  async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
-    const trimmedName = name.trim();
-    if (!trimmedName) return;
-    const trimmedQuantity = quantity.trim();
-    onAdd({
-      name: trimmedName,
-      quantity: trimmedQuantity || undefined,
-    });
-    reset();
-    onClose();
+    if (!selected) return;
+    setSubmitting(true);
+    try {
+      await onAdd(selected);
+      reset();
+      onClose();
+    } finally {
+      setSubmitting(false);
+    }
   }
 
   return (
@@ -50,27 +87,46 @@ export default function AddIngredientDialog({ open, onClose, onAdd }: Props) {
         <DialogTitle>Add ingredient</DialogTitle>
         <DialogContent>
           <Stack spacing={2} sx={{ pt: 1 }}>
-            <TextField
+            <Autocomplete
               autoFocus
-              fullWidth
-              label="Ingredient"
-              placeholder="e.g. Spinach"
-              value={name}
-              onChange={(e) => setName(e.target.value)}
-            />
-            <TextField
-              fullWidth
-              label="Quantity (optional)"
-              placeholder="e.g. 2 cups, 200g, 3 cans"
-              value={quantity}
-              onChange={(e) => setQuantity(e.target.value)}
+              options={options}
+              value={selected}
+              onChange={(_, value) => setSelected(value)}
+              inputValue={input}
+              onInputChange={(_, value) => setInput(value)}
+              getOptionLabel={(opt) => opt.name}
+              isOptionEqualToValue={(a, b) => a.ingredientId === b.ingredientId}
+              loading={loading}
+              filterOptions={(x) => x}
+              noOptionsText={input.trim() ? "No matches" : "Start typing…"}
+              renderInput={(params) => (
+                <TextField
+                  {...params}
+                  autoFocus
+                  label="Ingredient"
+                  placeholder="e.g. spinach"
+                  slotProps={{
+                    input: {
+                      ...params.InputProps,
+                      endAdornment: (
+                        <>
+                          {loading && <CircularProgress size={16} />}
+                          {params.InputProps.endAdornment}
+                        </>
+                      ),
+                    },
+                  }}
+                />
+              )}
             />
           </Stack>
         </DialogContent>
         <DialogActions>
-          <Button onClick={handleClose}>Cancel</Button>
-          <Button type="submit" variant="contained" disabled={!name.trim()}>
-            Add
+          <Button onClick={handleClose} disabled={submitting}>
+            Cancel
+          </Button>
+          <Button type="submit" variant="contained" disabled={!selected || submitting}>
+            {submitting ? "Adding…" : "Add"}
           </Button>
         </DialogActions>
       </form>

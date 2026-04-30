@@ -1,8 +1,9 @@
 "use client";
 
 import { useState } from "react";
-import Link from "next/link";
+import { useRouter } from "next/navigation";
 import {
+  Alert,
   Box,
   Button,
   Container,
@@ -14,14 +15,49 @@ import AddIcon from "@mui/icons-material/Add";
 import PageHeader from "@/components/layout/PageHeader";
 import AddIngredientDialog from "@/components/pantry/AddIngredientDialog";
 import ScannedItemCard from "@/components/scanned/ScannedItemCard";
-import { useScannedItems } from "@/hooks/useScannedItems";
+import { useScannedItems } from "@/context/ScannedContext";
+import { usePantry } from "@/context/PantryContext";
+import { useAuth } from "@/hooks/useAuth";
+import type { Ingredient } from "@/types/ingredient";
 
 export default function ScannedPage() {
-  const { items, addItems, removeItem } = useScannedItems();
+  const router = useRouter();
+  const { user } = useAuth();
+  const { items, addItems, removeItem, clear } = useScannedItems();
+  const { addIds } = usePantry();
   const [addOpen, setAddOpen] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
-  function handleAdd({ name, quantity }: { name: string; quantity?: string }) {
-    addItems([{ id: crypto.randomUUID(), name, quantity }]);
+  const matched = items.filter((i) => i.ingredientId != null);
+
+  function handleAdd(ingredient: Ingredient) {
+    addItems([
+      {
+        id: crypto.randomUUID(),
+        name: ingredient.name,
+        ingredientId: ingredient.ingredientId,
+      },
+    ]);
+  }
+
+  async function handleSaveAndContinue() {
+    setError(null);
+    if (!user) {
+      setError("Log in to save these to your pantry.");
+      return;
+    }
+    setSaving(true);
+    try {
+      const ids = matched.map((i) => i.ingredientId as number);
+      await addIds(ids);
+      clear();
+      router.push("/pantry");
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Failed to save to pantry");
+    } finally {
+      setSaving(false);
+    }
   }
 
   return (
@@ -51,8 +87,11 @@ export default function ScannedPage() {
         <Stack spacing={2}>
           <Typography variant="body2" color="text.secondary">
             Review what was detected. Remove anything that looks wrong, or add
-            anything we missed.
+            anything we missed. These items live only in this scan session — they
+            won&apos;t be saved until you tap &quot;Add to pantry&quot;.
           </Typography>
+
+          {error && <Alert severity="error">{error}</Alert>}
 
           <Stack spacing={1}>
             {items.length === 0 ? (
@@ -91,15 +130,18 @@ export default function ScannedPage() {
       >
         <Container maxWidth="sm" disableGutters>
           <Button
-            component={Link}
-            href="/recommendations"
+            onClick={handleSaveAndContinue}
             variant="contained"
             size="large"
-            disabled={items.length === 0}
+            disabled={matched.length === 0 || saving}
             fullWidth
             sx={{ borderRadius: 999, py: 1.5 }}
           >
-            Get recipes
+            {saving
+              ? "Saving…"
+              : `Add to pantry (${matched.length}${
+                  items.length !== matched.length ? `/${items.length}` : ""
+                })`}
           </Button>
         </Container>
       </Box>

@@ -5,6 +5,7 @@ import { Button } from "@mui/material";
 import StarIcon from "@mui/icons-material/Star";
 import StarBorderIcon from "@mui/icons-material/StarBorder";
 import { toggleFavorite } from "@/lib/api/recipes";
+import { useAuth } from "@/hooks/useAuth";
 
 export default function FavoriteButton({
   recipeId,
@@ -13,15 +14,17 @@ export default function FavoriteButton({
   recipeId: string;
   initial?: boolean;
 }) {
+  const { user } = useAuth();
   const [favorited, setFavorited] = useState(initial);
   const [pending, setPending] = useState(false);
 
   async function handleClick() {
+    if (!user) return;
     setPending(true);
     const next = !favorited;
     setFavorited(next);
     try {
-      await toggleFavorite(recipeId, next);
+      await toggleFavorite(user.id, recipeId, next);
     } catch {
       setFavorited(!next);
     } finally {
@@ -32,7 +35,7 @@ export default function FavoriteButton({
   return (
     <Button
       onClick={handleClick}
-      disabled={pending}
+      disabled={pending || !user}
       aria-pressed={favorited}
       variant={favorited ? "contained" : "outlined"}
       color="primary"
