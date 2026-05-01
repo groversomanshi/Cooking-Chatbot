@@ -13,7 +13,7 @@ export default function HubPage() {
 
       <Container maxWidth="sm" sx={{ py: 4 }}>
         <Stack spacing={3}>
-          <Typography variant="h4" fontWeight={600} letterSpacing="-0.02em">
+          <Typography variant="h4" sx={{ fontWeight: 600, letterSpacing: "-0.02em" }}>
             What&apos;s cooking?
           </Typography>
 

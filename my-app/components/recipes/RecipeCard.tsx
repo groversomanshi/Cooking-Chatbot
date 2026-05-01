@@ -37,7 +37,7 @@ export default function RecipeCard({ recipe }: { recipe: Recipe }) {
           </Box>
 
           <Stack spacing={0.5} sx={{ p: 2, flex: 1, minWidth: 0 }}>
-            <Typography fontWeight={500} noWrap>
+            <Typography noWrap sx={{ fontWeight: 500 }}>
               {recipe.title}
             </Typography>
             <Typography

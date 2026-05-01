@@ -95,7 +95,7 @@ export default function RecipeDetailPage({
       <Container maxWidth="sm" sx={{ py: 3 }}>
         <Stack spacing={4}>
           <Stack spacing={1}>
-            <Typography variant="h4" fontWeight={600} letterSpacing="-0.02em">
+            <Typography variant="h4" sx={{ fontWeight: 600, letterSpacing: "-0.02em" }}>
               {recipe.title}
             </Typography>
             {recipe.description && (
@@ -106,7 +106,7 @@ export default function RecipeDetailPage({
           </Stack>
 
           <Stack spacing={1}>
-            <Typography variant="subtitle1" fontWeight={500}>
+            <Typography variant="subtitle1" sx={{ fontWeight: 500 }}>
               Ingredients
             </Typography>
             <Stack component="ul" spacing={0.5} sx={{ m: 0, pl: 0, listStyle: "none" }}>
@@ -119,7 +119,7 @@ export default function RecipeDetailPage({
           </Stack>
 
           <Stack spacing={1}>
-            <Typography variant="subtitle1" fontWeight={500}>
+            <Typography variant="subtitle1" sx={{ fontWeight: 500 }}>
               Steps
             </Typography>
             <Stack component="ol" spacing={1} sx={{ m: 0, pl: 2.5 }}>

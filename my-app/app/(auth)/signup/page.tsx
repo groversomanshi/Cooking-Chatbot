@@ -6,7 +6,7 @@ export default function SignupPage() {
   return (
     <Stack spacing={4}>
       <Stack spacing={1}>
-        <Typography variant="h4" fontWeight={600} letterSpacing="-0.02em">
+        <Typography variant="h4" sx={{ fontWeight: 600, letterSpacing: "-0.02em" }}>
           Create account
         </Typography>
         <Typography variant="body2" color="text.secondary">

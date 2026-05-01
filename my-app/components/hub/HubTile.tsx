@@ -32,7 +32,7 @@ export default function HubTile({ href, title, subtitle, icon }: HubTileProps) {
             {icon}
           </Box>
           <Stack sx={{ flex: 1, minWidth: 0 }}>
-            <Typography fontWeight={500}>{title}</Typography>
+            <Typography sx={{ fontWeight: 500 }}>{title}</Typography>
             <Typography variant="body2" color="text.secondary" noWrap>
               {subtitle}
             </Typography>

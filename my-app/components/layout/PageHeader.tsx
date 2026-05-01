@@ -33,7 +33,7 @@ export default function PageHeader({ title, showBack, action, transparent }: Pro
           </IconButton>
         )}
         {title && (
-          <Typography variant="h6" fontWeight={500} noWrap>
+          <Typography variant="h6" noWrap sx={{ fontWeight: 500 }}>
             {title}
           </Typography>
         )}

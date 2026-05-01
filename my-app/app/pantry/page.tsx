@@ -69,7 +69,7 @@ export default function PantryPage() {
       <Container maxWidth="sm" sx={{ flex: 1, py: 2 }}>
         {!user && !authLoading ? (
           <Alert severity="info">
-            <Stack direction="row" spacing={1} alignItems="center">
+            <Stack direction="row" spacing={1} sx={{ alignItems: "center" }}>
               <Typography variant="body2">Log in to view your pantry.</Typography>
               <Button component={Link} href="/login" size="small">
                 Log in

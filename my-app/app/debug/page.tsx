@@ -144,9 +144,11 @@ export default function DebugPage() {
           <Stack
             direction={{ xs: "column", sm: "row" }}
             spacing={2}
-            alignItems={{ sm: "center" }}
-            justifyContent="space-between"
-            sx={{ mb: 2 }}
+            sx={{
+              alignItems: { sm: "center" },
+              justifyContent: "space-between",
+              mb: 2,
+            }}
           >
             <Typography variant="h6">Table probes</Typography>
             <Button
