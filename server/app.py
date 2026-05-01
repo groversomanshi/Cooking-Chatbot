@@ -10,7 +10,8 @@ Endpoints:
 
 import os
 import sys
-from typing import Optional
+import time
+from typing import Optional, Any
 
 import torch
 import clip
@@ -102,6 +103,10 @@ INGREDIENT_VECTORS: Optional[torch.Tensor] = None  # [N, D]
 INGREDIENT_IDS: list[int] = []
 INGREDIENT_NAMES: list[str] = []
 
+# Cached dietary restriction options
+RESTRICTION_OPTIONS: Optional[list[str]] = None
+RESTRICTION_OPTIONS_TS: float = 0.0
+RESTRICTION_OPTIONS_TTL_S = 300.0
 
 def load_ingredient_embeddings() -> int:
     """Pull every ingredient row from Supabase and cache its CLIP text embedding."""
@@ -205,6 +210,144 @@ def detect():
             "score": best_score,
         }
     )
+
+
+@app.route("/recommend", methods=["GET"])
+def recommend():
+    """
+    Return recipes the user has the ingredients for, excluding any that
+    conflict with their dietary restrictions.
+
+    Recommends recipes using Supabase REST queries (same style as the app) plus
+    local scoring:
+    - fetch userInfo.ingredients + userInfo.restrictions
+    - fetch candidate recipes that overlap the pantry (server-side filter)
+    - score + sort locally (same ordering as the SQL recommender)
+
+    Query params:
+      userId : required uuid
+      limit  : optional int (default 50)
+    """
+    user_id = request.args.get("userId")
+    if not user_id:
+        return jsonify({"error": "missing userId"}), 400
+
+    raw_limit = request.args.get("limit")
+    try:
+        limit = max(1, int(raw_limit)) if raw_limit else 50
+    except ValueError:
+        return jsonify({"error": "limit must be an integer"}), 400
+
+    def _as_list(val: Any) -> list:
+        if not val:
+            return []
+        if isinstance(val, list):
+            return val
+        return list(val)
+
+    def _score(recipes: list[dict], ingredient_ids: list[int], restrictions: list[str]) -> list[dict]:
+        pantry = set(int(x) for x in ingredient_ids)
+        banned = set(str(x) for x in restrictions)
+
+        scored: list[dict] = []
+        for r in recipes:
+            recipe_restr = set(str(x) for x in _as_list(r.get("dietary_restrictions")))
+            if banned and recipe_restr.intersection(banned):
+                continue
+
+            ing = _as_list(r.get("ingredient_ids"))
+            total = len(ing)
+            matched = len(set(int(x) for x in ing).intersection(pantry)) if pantry and ing else 0
+            pct = 0.0 if total == 0 else round((matched * 100.0) / total, 2)
+
+            scored.append(
+                {
+                    "id": r.get("id"),
+                    "name": r.get("name"),
+                    "website": r.get("website"),
+                    "matchedIngredientCount": matched,
+                    "totalIngredientCount": total,
+                    "matchPercent": pct,
+                }
+            )
+
+        scored.sort(
+            key=lambda x: (
+                x["matchedIngredientCount"],
+                x["matchPercent"],
+                x["totalIngredientCount"],
+            ),
+            reverse=True,
+        )
+        return scored
+
+    try:
+        t0 = time.time()
+        user_res = (
+            supabase.table("userInfo")
+            .select("ingredients, restrictions")
+            .eq("userId", user_id)
+            .limit(1)
+            .execute()
+        )
+        user_row = (user_res.data[0] if getattr(user_res, "data", None) else {}) or {}
+        ingredient_ids = _as_list(user_row.get("ingredients"))
+        restrictions = _as_list(user_row.get("restrictions"))
+
+        if len(ingredient_ids) == 0:
+            base = (
+                supabase.table("recipes")
+                .select("id, name, website, ingredient_ids, dietary_restrictions")
+                .order("id", desc=False)
+                .limit(limit)
+                .execute()
+            )
+            recipes = base.data or []
+        else:
+            cand = (
+                supabase.table("recipes")
+                .select("id, name, website, ingredient_ids, dietary_restrictions")
+                # PostgREST `ov` expects a Postgres array literal, not JSON.
+                .filter(
+                    "ingredient_ids",
+                    "ov",
+                    "{" + ",".join(str(int(x)) for x in ingredient_ids) + "}",
+                )
+                .limit(2000)
+                .execute()
+            )
+            recipes = cand.data or []
+
+        rows = _score(recipes, ingredient_ids, restrictions)[:limit]
+        dt = round((time.time() - t0) * 1000)
+        print(
+            f"[recommend] user={user_id} pantry={len(ingredient_ids)} limit={limit} -> {len(rows)} rows in {dt}ms",
+            flush=True,
+        )
+        return jsonify(rows)
+    except Exception as e:
+        print(f"[recommend] ERROR: {repr(e)}", flush=True)
+        return jsonify({"error": f"recommend failed: {e}"}), 500
+
+
+@app.route("/restrictions", methods=["GET"])
+def restrictions():
+    try:
+        global RESTRICTION_OPTIONS, RESTRICTION_OPTIONS_TS
+        now = time.time()
+        if (
+            RESTRICTION_OPTIONS is None
+            or (now - RESTRICTION_OPTIONS_TS) > RESTRICTION_OPTIONS_TTL_S
+        ):
+            res = supabase.rpc("list_dietary_restrictions", {}).execute()
+            RESTRICTION_OPTIONS = [str(x) for x in (res.data or [])]
+            RESTRICTION_OPTIONS_TS = now
+
+        return jsonify({"options": RESTRICTION_OPTIONS})
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 500
+    except Exception as e:
+        return jsonify({"error": f"restrictions lookup failed: {e}"}), 500
 
 
 if __name__ == "__main__":

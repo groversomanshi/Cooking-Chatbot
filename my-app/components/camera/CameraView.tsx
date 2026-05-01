@@ -2,10 +2,18 @@
 
 import { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
-import { Alert, Box, Button, Stack, Typography } from "@mui/material";
+import {
+  Alert,
+  Badge,
+  Box,
+  Button,
+  Stack,
+  Typography,
+} from "@mui/material";
+import PlaylistAddCheckIcon from "@mui/icons-material/PlaylistAddCheck";
 import { useCamera } from "@/hooks/useCamera";
 import { useAuth } from "@/hooks/useAuth";
-import { usePantry } from "@/context/PantryContext";
+import { useStagedIngredients } from "@/context/StagedIngredientsContext";
 import { detectIngredient } from "@/lib/api/detect";
 
 const POLL_INTERVAL_MS = 2000;
@@ -16,13 +24,12 @@ export default function CameraView() {
   const router = useRouter();
   const { user, loading: authLoading } = useAuth();
   const { videoRef, captureFrame, ready, error: cameraError } = useCamera();
-  const { addIds } = usePantry();
+  const { items: staged, add: stage } = useStagedIngredients();
 
   const [detection, setDetection] = useState<Detection | null>(null);
   const [scanning, setScanning] = useState(false);
-  const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [lastAdded, setLastAdded] = useState<string | null>(null);
+  const [justAdded, setJustAdded] = useState<string | null>(null);
 
   const inFlight = useRef(false);
 
@@ -81,19 +88,11 @@ export default function CameraView() {
     };
   }, [ready, user, detection, captureFrame]);
 
-  async function handleYes() {
+  function handleYes() {
     if (!detection) return;
-    setSaving(true);
-    setError(null);
-    try {
-      await addIds([detection.ingredientId]);
-      setLastAdded(detection.name);
-      setDetection(null);
-    } catch (e) {
-      setError(e instanceof Error ? e.message : "Failed to add");
-    } finally {
-      setSaving(false);
-    }
+    stage({ ingredientId: detection.ingredientId, name: detection.name });
+    setJustAdded(detection.name);
+    setDetection(null);
   }
 
   function handleNo() {
@@ -101,7 +100,7 @@ export default function CameraView() {
   }
 
   return (
-    <Stack spacing={2}>
+    <Stack spacing={2} sx={{ pb: staged.length > 0 ? 12 : 0 }}>
       <Box
         sx={{
           position: "relative",
@@ -192,8 +191,7 @@ export default function CameraView() {
               <Typography
                 variant="caption"
                 color="text.secondary"
-                display="block"
-                sx={{ mt: 0.5 }}
+                sx={{ mt: 0.5, display: "block" }}
               >
                 {(detection.score * 100).toFixed(0)}% confidence
               </Typography>
@@ -203,21 +201,11 @@ export default function CameraView() {
                 spacing={1.5}
                 sx={{ mt: 3, justifyContent: "center" }}
               >
-                <Button
-                  variant="outlined"
-                  color="inherit"
-                  onClick={handleNo}
-                  disabled={saving}
-                >
+                <Button variant="outlined" color="inherit" onClick={handleNo}>
                   No
                 </Button>
-                <Button
-                  variant="contained"
-                  color="primary"
-                  onClick={handleYes}
-                  disabled={saving}
-                >
-                  {saving ? "Adding…" : "Yes, add it"}
+                <Button variant="contained" color="primary" onClick={handleYes}>
+                  Yes, add it
                 </Button>
               </Stack>
             </Box>
@@ -231,10 +219,50 @@ export default function CameraView() {
           {error}
         </Alert>
       )}
-      {lastAdded && !detection && (
-        <Alert severity="success" onClose={() => setLastAdded(null)}>
-          Added <strong>{lastAdded}</strong> to your pantry.
+      {justAdded && !detection && (
+        <Alert severity="success" onClose={() => setJustAdded(null)}>
+          Staged <strong>{justAdded}</strong>. Tap “Review” to confirm and save.
         </Alert>
+      )}
+
+      {staged.length > 0 && (
+        <Box
+          sx={{
+            position: "fixed",
+            left: 0,
+            right: 0,
+            bottom: 0,
+            bgcolor: "background.paper",
+            borderTop: 1,
+            borderColor: "divider",
+            px: 2,
+            py: 2,
+            pb: "calc(env(safe-area-inset-bottom) + 16px)",
+            zIndex: 1100,
+          }}
+        >
+          <Box sx={{ maxWidth: 600, mx: "auto" }}>
+            <Button
+              onClick={() => router.push("/camera/confirm")}
+              variant="contained"
+              size="large"
+              fullWidth
+              startIcon={
+                <Badge
+                  badgeContent={staged.length}
+                  color="secondary"
+                  overlap="circular"
+                >
+                  <PlaylistAddCheckIcon />
+                </Badge>
+              }
+              sx={{ borderRadius: 999, py: 1.5 }}
+            >
+              Review {staged.length}{" "}
+              {staged.length === 1 ? "ingredient" : "ingredients"}
+            </Button>
+          </Box>
+        </Box>
       )}
     </Stack>
   );

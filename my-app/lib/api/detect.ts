@@ -5,13 +5,19 @@ export type DetectResult =
 const ENDPOINT =
   process.env.NEXT_PUBLIC_DETECT_URL ?? "http://127.0.0.1:5000/detect";
 
+const FETCH_MS = 120_000;
+
 export async function detectIngredient(image: Blob): Promise<DetectResult> {
   const fd = new FormData();
   fd.append("image", image, "frame.jpg");
 
   let res: Response;
   try {
-    res = await fetch(ENDPOINT, { method: "POST", body: fd });
+    res = await fetch(ENDPOINT, {
+      method: "POST",
+      body: fd,
+      signal: AbortSignal.timeout(FETCH_MS),
+    });
   } catch (e) {
     throw new Error(
       `Couldn't reach detection server at ${ENDPOINT}. Is it running? (${

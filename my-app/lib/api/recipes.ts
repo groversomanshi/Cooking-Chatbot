@@ -68,6 +68,26 @@ export async function getRecipeById(id: string): Promise<Recipe | null> {
  * Favorites live in `userInfo.favorites` (bigint[]). These helpers fetch the
  * caller's saved recipes; the pantry/favorites contexts handle the writes.
  */
+async function getFavoriteIds(userId: string): Promise<number[]> {
+  const { data, error } = await supabase
+    .from("userInfo")
+    .select("favorites")
+    .eq("userId", userId)
+    .maybeSingle();
+  if (error) throw error;
+  return (data?.favorites as number[] | null) ?? [];
+}
+
+export async function isRecipeFavorited(
+  userId: string,
+  recipeId: string,
+): Promise<boolean> {
+  const numId = Number(recipeId);
+  if (!Number.isFinite(numId)) return false;
+  const ids = await getFavoriteIds(userId);
+  return ids.includes(numId);
+}
+
 export async function getFavoriteRecipes(userId: string): Promise<Recipe[]> {
   const { data, error } = await supabase
     .from("userInfo")

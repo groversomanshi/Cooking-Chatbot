@@ -3,6 +3,7 @@ import PhotoCameraIcon from "@mui/icons-material/PhotoCamera";
 import KitchenIcon from "@mui/icons-material/Kitchen";
 import AutoAwesomeIcon from "@mui/icons-material/AutoAwesome";
 import FavoriteIcon from "@mui/icons-material/Favorite";
+import TuneIcon from "@mui/icons-material/Tune";
 import HubTile from "@/components/hub/HubTile";
 import PageHeader from "@/components/layout/PageHeader";
 
@@ -41,6 +42,12 @@ export default function HubPage() {
               title="Favorites"
               subtitle="Your saved recipes"
               icon={<FavoriteIcon />}
+            />
+            <HubTile
+              href="/preferences"
+              title="Preferences"
+              subtitle="Dietary restrictions and filters"
+              icon={<TuneIcon />}
             />
           </Stack>
         </Stack>

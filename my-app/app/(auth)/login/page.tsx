@@ -1,6 +1,7 @@
 import Link from "next/link";
 import { Stack, Typography } from "@mui/material";
 import LoginForm from "@/components/auth/LoginForm";
+import GoogleSignInButton from "@/components/auth/GoogleSignInButton";
 
 export default function LoginPage() {
   return (
@@ -15,6 +16,8 @@ export default function LoginPage() {
       </Stack>
 
       <LoginForm />
+
+      <GoogleSignInButton />
 
       <Typography variant="body2" color="text.secondary" align="center">
         Don&apos;t have an account?{" "}

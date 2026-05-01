@@ -1,6 +1,7 @@
 import Link from "next/link";
 import { Stack, Typography } from "@mui/material";
 import SignupForm from "@/components/auth/SignupForm";
+import GoogleSignInButton from "@/components/auth/GoogleSignInButton";
 
 export default function SignupPage() {
   return (
@@ -15,6 +16,8 @@ export default function SignupPage() {
       </Stack>
 
       <SignupForm />
+
+      <GoogleSignInButton label="Sign up with Google" />
 
       <Typography variant="body2" color="text.secondary" align="center">
         Already have an account?{" "}

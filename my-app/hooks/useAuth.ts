@@ -15,12 +15,24 @@ export function useAuth() {
 
   useEffect(() => {
     let cancelled = false;
+    const safety = setTimeout(() => {
+      if (!cancelled) setLoading(false);
+    }, 5000);
 
-    supabase.auth.getUser().then(({ data }) => {
-      if (cancelled) return;
-      setUser(toUser(data.user));
-      setLoading(false);
-    });
+    async function hydrate() {
+      try {
+        const { data, error } = await supabase.auth.getSession();
+        if (cancelled) return;
+        if (error) throw error;
+        setUser(toUser(data.session?.user ?? null));
+      } catch {
+        if (!cancelled) setUser(null);
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    }
+
+    hydrate();
 
     const { data: sub } = supabase.auth.onAuthStateChange((_event, session) => {
       setUser(toUser(session?.user ?? null));
@@ -29,6 +41,7 @@ export function useAuth() {
 
     return () => {
       cancelled = true;
+      clearTimeout(safety);
       sub.subscription.unsubscribe();
     };
   }, []);
