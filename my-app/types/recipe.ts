@@ -12,6 +12,8 @@ export type Recipe = {
   description: string;
   ingredients: string[];
   steps: string[];
+  /** True when steps were synthesized because the dataset lacked instructions. */
+  stepsPlaceholder?: boolean;
   imageUrl?: string;
   website?: string | null;
   ingredientIds?: number[];

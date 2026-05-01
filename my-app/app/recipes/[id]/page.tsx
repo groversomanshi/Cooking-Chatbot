@@ -120,7 +120,7 @@ export default function RecipeDetailPage({
 
           <Stack spacing={1}>
             <Typography variant="subtitle1" sx={{ fontWeight: 500 }}>
-              Steps
+              Steps{recipe.stepsPlaceholder ? " (placeholder)" : ""}
             </Typography>
             <Stack component="ol" spacing={1} sx={{ m: 0, pl: 2.5 }}>
               {recipe.steps.map((s, idx) => (

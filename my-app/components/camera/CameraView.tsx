@@ -142,13 +142,17 @@ export default function CameraView() {
               position: "absolute",
               top: 12,
               right: 12,
-              bgcolor: "rgba(255,255,255,0.85)",
+              bgcolor: "rgba(255,255,255,0.9)",
               borderRadius: 999,
               px: 1.5,
               py: 0.5,
+              boxShadow: "0 8px 24px rgba(0,0,0,0.18)",
             }}
           >
-            <Typography variant="caption" sx={{ fontWeight: 500 }}>
+            <Typography
+              variant="caption"
+              sx={{ fontWeight: 600, color: "rgba(0,0,0,0.78)" }}
+            >
               Scanning…
             </Typography>
           </Box>
