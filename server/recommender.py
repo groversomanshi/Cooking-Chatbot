@@ -38,8 +38,8 @@ WHERE
     && %s::dietary_restriction[]
   )
 ORDER BY
-  m.matched_ingredient_count DESC,
   match_percent DESC,
+  m.matched_ingredient_count DESC,
   m.total_ingredient_count DESC;
 """
 
