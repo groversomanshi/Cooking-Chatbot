@@ -1,0 +1,155 @@
+import { supabase } from "@/lib/supabase/client";
+import { getIngredientsByIds } from "@/lib/api/ingredients";
+import type { Recipe } from "@/types/recipe";
+
+const SELECT =
+  "id, name, ingredient_ids, instructions, unfiltered_ingredients, website, dietary_restrictions";
+
+type RecipeRow = {
+  id: number;
+  name: string;
+  ingredient_ids: number[] | null;
+  instructions: string[] | null;
+  unfiltered_ingredients: string[] | null;
+  website: string | null;
+  dietary_restrictions: string[] | null;
+};
+
+function mapRow(row: RecipeRow): Recipe {
+  const steps = row.instructions?.filter(Boolean) ?? [];
+  return {
+    id: String(row.id),
+    title: row.name,
+    description: steps[0] ?? "",
+    ingredients: row.unfiltered_ingredients ?? [],
+    steps,
+    website: row.website,
+    ingredientIds: row.ingredient_ids ?? [],
+    dietaryRestrictions: row.dietary_restrictions ?? [],
+  };
+}
+
+export async function getRecommendedRecipes(): Promise<Recipe[]> {
+  // TODO: filter by the user's pantry ingredient_ids once we have a server route.
+  const { data, error } = await supabase
+    .from("recipes")
+    .select(SELECT)
+    .order("id", { ascending: true })
+    .limit(50);
+  if (error) throw error;
+  return (data as RecipeRow[]).map(mapRow);
+}
+
+export async function getRecipesByIds(ids: number[]): Promise<Recipe[]> {
+  if (ids.length === 0) return [];
+  const { data, error } = await supabase
+    .from("recipes")
+    .select(SELECT)
+    .in("id", ids);
+  if (error) throw error;
+  const rows = (data as RecipeRow[]).map(mapRow);
+  // Preserve the order requested by the caller.
+  const byId = new Map(rows.map((r) => [r.id, r]));
+  return ids.map((id) => byId.get(String(id))).filter((r): r is Recipe => !!r);
+}
+
+export async function getRecipeById(id: string): Promise<Recipe | null> {
+  const numId = Number(id);
+  if (!Number.isFinite(numId)) return null;
+  const { data, error } = await supabase
+    .from("recipes")
+    .select(SELECT)
+    .eq("id", numId)
+    .maybeSingle();
+  if (error) throw error;
+  if (!data) return null;
+
+  const recipe = mapRow(data as RecipeRow);
+
+  // If the recipe doesn't have unfiltered ingredient strings, fall back to
+  // resolving names from ingredient_ids.
+  if (recipe.ingredients.length === 0 && (recipe.ingredientIds?.length ?? 0) > 0) {
+    const rows = await getIngredientsByIds(recipe.ingredientIds ?? []);
+    recipe.ingredients = rows.map((r) => r.name);
+  }
+
+  // Placeholder instructions when the dataset doesn't include them.
+  if (recipe.steps.length === 0) {
+    const hasIngredients = recipe.ingredients.length > 0;
+    recipe.steps = [
+      "Gather your ingredients and kitchen tools.",
+      hasIngredients
+        ? `Prep the ingredients: ${recipe.ingredients.slice(0, 6).join(", ")}${
+            recipe.ingredients.length > 6 ? ", …" : ""
+          }.`
+        : "Prep and measure your ingredients.",
+      "Cook according to your preferred method (stovetop/oven) until done.",
+      "Taste, adjust seasoning, and serve.",
+    ];
+    recipe.description = recipe.description || "Instructions coming soon.";
+    recipe.stepsPlaceholder = true;
+  }
+
+  return recipe;
+}
+
+/**
+ * Favorites live in `userInfo.favorites` (bigint[]). These helpers fetch the
+ * caller's saved recipes; the pantry/favorites contexts handle the writes.
+ */
+async function getFavoriteIds(userId: string): Promise<number[]> {
+  const { data, error } = await supabase
+    .from("userInfo")
+    .select("favorites")
+    .eq("userId", userId)
+    .maybeSingle();
+  if (error) throw error;
+  return (data?.favorites as number[] | null) ?? [];
+}
+
+export async function isRecipeFavorited(
+  userId: string,
+  recipeId: string,
+): Promise<boolean> {
+  const numId = Number(recipeId);
+  if (!Number.isFinite(numId)) return false;
+  const ids = await getFavoriteIds(userId);
+  return ids.includes(numId);
+}
+
+export async function getFavoriteRecipes(userId: string): Promise<Recipe[]> {
+  const { data, error } = await supabase
+    .from("userInfo")
+    .select("favorites")
+    .eq("userId", userId)
+    .maybeSingle();
+  if (error) throw error;
+  const ids = (data?.favorites as number[] | null) ?? [];
+  return getRecipesByIds(ids);
+}
+
+export async function toggleFavorite(
+  userId: string,
+  recipeId: string,
+  favorited: boolean,
+): Promise<void> {
+  const numId = Number(recipeId);
+  if (!Number.isFinite(numId)) throw new Error(`Invalid recipe id: ${recipeId}`);
+
+  const { data, error } = await supabase
+    .from("userInfo")
+    .select("favorites")
+    .eq("userId", userId)
+    .maybeSingle();
+  if (error) throw error;
+
+  const current = (data?.favorites as number[] | null) ?? [];
+  const next = favorited
+    ? Array.from(new Set([...current, numId]))
+    : current.filter((id) => id !== numId);
+
+  const { error: writeErr } = await supabase
+    .from("userInfo")
+    .upsert({ userId, favorites: next }, { onConflict: "userId" });
+  if (writeErr) throw writeErr;
+}
