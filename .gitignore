@@ -7,3 +7,5 @@ saved_pages/
 ingredients_data.tar
 saved_pages*
 .DS_Store
+CLAUDE.md
+graphify-out/
