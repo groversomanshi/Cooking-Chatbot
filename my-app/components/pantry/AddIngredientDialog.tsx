@@ -1,8 +1,9 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import {
   Autocomplete,
+  type AutocompleteRenderInputParams,
   Button,
   CircularProgress,
   Dialog,
@@ -81,6 +82,34 @@ export default function AddIngredientDialog({ open, onClose, onAdd }: Props) {
     }
   }
 
+  function renderIngredientInput(params: AutocompleteRenderInputParams) {
+    const inputProps = (
+      params as typeof params & {
+        InputProps?: { endAdornment?: ReactNode };
+      }
+    ).InputProps;
+
+    return (
+      <TextField
+        {...params}
+        autoFocus
+        label="Ingredient"
+        placeholder="e.g. spinach"
+        slotProps={{
+          input: {
+            ...inputProps,
+            endAdornment: (
+              <>
+                {loading && <CircularProgress size={16} />}
+                {inputProps?.endAdornment}
+              </>
+            ),
+          },
+        }}
+      />
+    );
+  }
+
   return (
     <Dialog open={open} onClose={handleClose} fullWidth maxWidth="xs">
       <form onSubmit={handleSubmit}>
@@ -99,25 +128,7 @@ export default function AddIngredientDialog({ open, onClose, onAdd }: Props) {
               loading={loading}
               filterOptions={(x) => x}
               noOptionsText={input.trim() ? "No matches" : "Start typing…"}
-              renderInput={(params) => (
-                <TextField
-                  {...params}
-                  autoFocus
-                  label="Ingredient"
-                  placeholder="e.g. spinach"
-                  slotProps={{
-                    input: {
-                      ...params.InputProps,
-                      endAdornment: (
-                        <>
-                          {loading && <CircularProgress size={16} />}
-                          {params.InputProps.endAdornment}
-                        </>
-                      ),
-                    },
-                  }}
-                />
-              )}
+              renderInput={renderIngredientInput}
             />
           </Stack>
         </DialogContent>

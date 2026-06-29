@@ -7,7 +7,11 @@ import psycopg2
 from psycopg2.extras import RealDictCursor
 
 from dotenv import load_dotenv
-load_dotenv()
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+ROOT = os.path.abspath(os.path.join(HERE, ".."))
+load_dotenv(os.path.join(ROOT, ".env"))
+load_dotenv(os.path.join(HERE, ".env"), override=True)
 
 RECOMMENDER_SQL = """
 SELECT

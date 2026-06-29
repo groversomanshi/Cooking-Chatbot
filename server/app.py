@@ -1,11 +1,11 @@
 """
 Flask service that classifies an uploaded image as one of the ingredients in
-the public.ingredients Supabase table using (optionally fine-tuned) CLIP.
+the public.ingredients Aiven/Postgres table using (optionally fine-tuned) CLIP.
 
 Endpoints:
   GET  /health    - sanity check
   POST /detect    - multipart 'image' -> { detected, ingredientId?, name?, score }
-  POST /refresh   - reload ingredient embeddings from Supabase
+  POST /refresh   - reload ingredient embeddings from Postgres
 """
 
 import os
@@ -17,32 +17,108 @@ import torch
 import clip
 from flask import Flask, request, jsonify
 from flask_cors import CORS
-from supabase import create_client, Client
+import psycopg2
+from psycopg2.extras import RealDictCursor
 from dotenv import load_dotenv
 from PIL import Image
 
-load_dotenv()
+from recommender import (
+    get_dietary_restriction_options,
+    get_recommendations_for_user,
+)
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+ROOT = os.path.abspath(os.path.join(HERE, ".."))
+load_dotenv(os.path.join(ROOT, ".env"))
+load_dotenv(os.path.join(HERE, ".env"), override=True)
 
 # ---------------------------------------------------------------------------
 # Config
 # ---------------------------------------------------------------------------
 
-SUPABASE_URL = os.environ.get("SUPABASE_URL") or os.environ.get(
-    "NEXT_PUBLIC_SUPABASE_URL"
-)
-SUPABASE_KEY = (
-    os.environ.get("SUPABASE_SERVICE_ROLE_KEY")
-    or os.environ.get("SUPABASE_KEY")
-    or os.environ.get("NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY")
-)
+DATABASE_URL = os.environ.get("DATABASE_URL")
 CLIP_THRESHOLD = float(os.environ.get("CLIP_CONFIDENCE_THRESHOLD", "0.2"))
 PORT = int(os.environ.get("PORT", "5000"))
 
-if not SUPABASE_URL or not SUPABASE_KEY:
+if not DATABASE_URL:
     sys.exit(
-        "Missing Supabase env. Set SUPABASE_URL and SUPABASE_KEY (or "
-        "SUPABASE_SERVICE_ROLE_KEY) in server/.env"
+        "Missing database env. Set DATABASE_URL to your Aiven Postgres "
+        "connection string in server/.env"
     )
+
+
+DB_CONNECT_OPTIONS = {
+    "connect_timeout": 5,
+    "options": "-c statement_timeout=15000",
+}
+
+
+def db_connect():
+    return psycopg2.connect(DATABASE_URL, **DB_CONNECT_OPTIONS)
+
+
+def parse_int_csv(value: Optional[str]) -> list[int]:
+    if not value:
+        return []
+    ids: list[int] = []
+    for raw in value.split(","):
+        raw = raw.strip()
+        if not raw:
+            continue
+        ids.append(int(raw))
+    return ids
+
+
+def parse_str_csv(value: Optional[str]) -> list[str]:
+    if not value:
+        return []
+    return [part.strip() for part in value.split(",") if part.strip()]
+
+
+def rows_to_json(rows):
+    return [dict(row) for row in rows]
+
+
+def fetch_user_info(user_id: str) -> dict[str, Any]:
+    with db_connect() as conn:
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            cur.execute(
+                """
+                INSERT INTO public."userInfo" ("userId", ingredients, restrictions, favorites)
+                VALUES (%s::uuid, ARRAY[]::bigint[], ARRAY[]::dietary_restriction[], ARRAY[]::bigint[])
+                ON CONFLICT ("userId") DO NOTHING;
+                """,
+                (user_id,),
+            )
+            cur.execute(
+                """
+                SELECT "userId", ingredients, restrictions::text[] AS restrictions, favorites
+                FROM public."userInfo"
+                WHERE "userId" = %s::uuid
+                LIMIT 1;
+                """,
+                (user_id,),
+            )
+            row = cur.fetchone()
+    return dict(row or {})
+
+
+def update_user_array(user_id: str, column: str, values: list[Any], postgres_type: str):
+    allowed = {"ingredients", "restrictions", "favorites"}
+    if column not in allowed:
+        raise ValueError(f"Unsupported userInfo column: {column}")
+
+    with db_connect() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                f"""
+                INSERT INTO public."userInfo" ("userId", {column})
+                VALUES (%s::uuid, %s::{postgres_type}[])
+                ON CONFLICT ("userId")
+                DO UPDATE SET {column} = EXCLUDED.{column};
+                """,
+                (user_id, values),
+            )
 
 
 def find_clip_weights() -> Optional[str]:
@@ -66,8 +142,6 @@ def find_clip_weights() -> Optional[str]:
 
 app = Flask(__name__)
 CORS(app)
-
-supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
 device = "cuda" if torch.cuda.is_available() else "cpu"
 print(f"[clip] loading ViT-B/32 on {device}", flush=True)
@@ -109,21 +183,24 @@ RESTRICTION_OPTIONS_TS: float = 0.0
 RESTRICTION_OPTIONS_TTL_S = 300.0
 
 def load_ingredient_embeddings() -> int:
-    """Pull every ingredient row from Supabase and cache its CLIP text embedding."""
+    """Pull every ingredient row from Postgres and cache its CLIP text embedding."""
     global INGREDIENT_VECTORS, INGREDIENT_IDS, INGREDIENT_NAMES
 
-    print("[clip] fetching ingredients from Supabase…", flush=True)
-    res = (
-        supabase.table("ingredients")
-        .select('"ingredientId", name')
-        .order('"ingredientId"')
-        .execute()
-    )
-    rows = res.data or []
+    print("[clip] fetching ingredients from Postgres...", flush=True)
+    with db_connect() as conn:
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            cur.execute(
+                """
+                SELECT "ingredientId", name
+                FROM public.ingredients
+                ORDER BY "ingredientId";
+                """
+            )
+            rows = cur.fetchall()
+
     if not rows:
         print(
-            "[clip] WARN: 0 ingredient rows returned. Check RLS policy on "
-            "public.ingredients.",
+            "[clip] WARN: 0 ingredient rows returned from public.ingredients.",
             flush=True,
         )
         INGREDIENT_VECTORS = None
@@ -212,17 +289,192 @@ def detect():
     )
 
 
+@app.route("/ingredients", methods=["GET"])
+def ingredients():
+    try:
+        ids = parse_int_csv(request.args.get("ids"))
+        names = [name.lower() for name in parse_str_csv(request.args.get("names"))]
+        query = (request.args.get("q") or "").strip()
+        raw_limit = request.args.get("limit")
+        limit = max(1, int(raw_limit)) if raw_limit else 20
+
+        with db_connect() as conn:
+            with conn.cursor(cursor_factory=RealDictCursor) as cur:
+                if ids:
+                    cur.execute(
+                        """
+                        SELECT "ingredientId", name, restrictions::text[] AS restrictions
+                        FROM public.ingredients
+                        WHERE "ingredientId" = ANY(%s::bigint[])
+                        ORDER BY "ingredientId";
+                        """,
+                        (ids,),
+                    )
+                elif names:
+                    cur.execute(
+                        """
+                        SELECT "ingredientId", name, restrictions::text[] AS restrictions
+                        FROM public.ingredients
+                        WHERE lower(name) = ANY(%s::text[])
+                        ORDER BY name;
+                        """,
+                        (names,),
+                    )
+                elif query:
+                    cur.execute(
+                        """
+                        SELECT "ingredientId", name, restrictions::text[] AS restrictions
+                        FROM public.ingredients
+                        WHERE name ILIKE %s
+                        ORDER BY name
+                        LIMIT %s;
+                        """,
+                        (f"{query}%", limit),
+                    )
+                else:
+                    cur.execute(
+                        """
+                        SELECT "ingredientId", name, restrictions::text[] AS restrictions
+                        FROM public.ingredients
+                        ORDER BY name
+                        LIMIT %s;
+                        """,
+                        (limit,),
+                    )
+
+                return jsonify(rows_to_json(cur.fetchall()))
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+    except Exception as e:
+        return jsonify({"error": f"ingredients lookup failed: {e}"}), 500
+
+
+@app.route("/recipes", methods=["GET"])
+def recipes():
+    try:
+        ids = parse_int_csv(request.args.get("ids"))
+        raw_limit = request.args.get("limit")
+        limit = max(1, int(raw_limit)) if raw_limit else 50
+
+        with db_connect() as conn:
+            with conn.cursor(cursor_factory=RealDictCursor) as cur:
+                if ids:
+                    cur.execute(
+                        """
+                        SELECT id, name, ingredient_ids, instructions,
+                               unfiltered_ingredients, website,
+                               dietary_restrictions::text[] AS dietary_restrictions
+                        FROM public.recipes
+                        WHERE id = ANY(%s::bigint[])
+                        ORDER BY id;
+                        """,
+                        (ids,),
+                    )
+                else:
+                    cur.execute(
+                        """
+                        SELECT id, name, ingredient_ids, instructions,
+                               unfiltered_ingredients, website,
+                               dietary_restrictions::text[] AS dietary_restrictions
+                        FROM public.recipes
+                        ORDER BY id
+                        LIMIT %s;
+                        """,
+                        (limit,),
+                    )
+
+                return jsonify(rows_to_json(cur.fetchall()))
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+    except Exception as e:
+        return jsonify({"error": f"recipes lookup failed: {e}"}), 500
+
+
+@app.route("/recipes/<int:recipe_id>", methods=["GET"])
+def recipe_by_id(recipe_id: int):
+    try:
+        with db_connect() as conn:
+            with conn.cursor(cursor_factory=RealDictCursor) as cur:
+                cur.execute(
+                    """
+                    SELECT id, name, ingredient_ids, instructions,
+                           unfiltered_ingredients, website,
+                           dietary_restrictions::text[] AS dietary_restrictions
+                    FROM public.recipes
+                    WHERE id = %s
+                    LIMIT 1;
+                    """,
+                    (recipe_id,),
+                )
+                row = cur.fetchone()
+
+        if not row:
+            return jsonify({"error": "recipe not found"}), 404
+        return jsonify(dict(row))
+    except Exception as e:
+        return jsonify({"error": f"recipe lookup failed: {e}"}), 500
+
+
+@app.route("/users/<user_id>/pantry", methods=["GET", "PUT"])
+def user_pantry(user_id: str):
+    try:
+        if request.method == "PUT":
+            body = request.get_json(silent=True) or {}
+            ingredient_ids = [int(x) for x in body.get("ingredients", [])]
+            update_user_array(user_id, "ingredients", ingredient_ids, "bigint")
+
+        row = fetch_user_info(user_id)
+        return jsonify({"ingredients": row.get("ingredients") or []})
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+    except Exception as e:
+        return jsonify({"error": f"pantry update failed: {e}"}), 500
+
+
+@app.route("/users/<user_id>/restrictions", methods=["GET", "PUT"])
+def user_restrictions(user_id: str):
+    try:
+        if request.method == "PUT":
+            body = request.get_json(silent=True) or {}
+            restrictions = [str(x) for x in body.get("restrictions", [])]
+            update_user_array(
+                user_id,
+                "restrictions",
+                restrictions,
+                "dietary_restriction",
+            )
+
+        row = fetch_user_info(user_id)
+        return jsonify({"restrictions": row.get("restrictions") or []})
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+    except Exception as e:
+        return jsonify({"error": f"restrictions update failed: {e}"}), 500
+
+
+@app.route("/users/<user_id>/favorites", methods=["GET", "PUT"])
+def user_favorites(user_id: str):
+    try:
+        if request.method == "PUT":
+            body = request.get_json(silent=True) or {}
+            favorites = [int(x) for x in body.get("favorites", [])]
+            update_user_array(user_id, "favorites", favorites, "bigint")
+
+        row = fetch_user_info(user_id)
+        return jsonify({"favorites": row.get("favorites") or []})
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+    except Exception as e:
+        return jsonify({"error": f"favorites update failed: {e}"}), 500
+
+
 @app.route("/recommend", methods=["GET"])
 def recommend():
     """
     Return recipes the user has the ingredients for, excluding any that
     conflict with their dietary restrictions.
 
-    Recommends recipes using Supabase REST queries (same style as the app) plus
-    local scoring:
-    - fetch userInfo.ingredients + userInfo.restrictions
-    - fetch candidate recipes that overlap the pantry (server-side filter)
-    - score + sort locally (same ordering as the SQL recommender)
+    Recommends recipes using the Aiven/Postgres database connection.
 
     Query params:
       userId : required uuid
@@ -238,90 +490,23 @@ def recommend():
     except ValueError:
         return jsonify({"error": "limit must be an integer"}), 400
 
-    def _as_list(val: Any) -> list:
-        if not val:
-            return []
-        if isinstance(val, list):
-            return val
-        return list(val)
-
-    def _score(recipes: list[dict], ingredient_ids: list[int], restrictions: list[str]) -> list[dict]:
-        pantry = set(int(x) for x in ingredient_ids)
-        banned = set(str(x) for x in restrictions)
-
-        scored: list[dict] = []
-        for r in recipes:
-            recipe_restr = set(str(x) for x in _as_list(r.get("dietary_restrictions")))
-            if banned and recipe_restr.intersection(banned):
-                continue
-
-            ing = _as_list(r.get("ingredient_ids"))
-            total = len(ing)
-            matched = len(set(int(x) for x in ing).intersection(pantry)) if pantry and ing else 0
-            pct = 0.0 if total == 0 else round((matched * 100.0) / total, 2)
-
-            scored.append(
-                {
-                    "id": r.get("id"),
-                    "name": r.get("name"),
-                    "website": r.get("website"),
-                    "matchedIngredientCount": matched,
-                    "totalIngredientCount": total,
-                    "matchPercent": pct,
-                }
-            )
-
-        scored.sort(
-            key=lambda x: (
-                x["matchedIngredientCount"],
-                x["matchPercent"],
-                x["totalIngredientCount"],
-            ),
-            reverse=True,
-        )
-        return scored
-
     try:
         t0 = time.time()
-        user_res = (
-            supabase.table("userInfo")
-            .select("ingredients, restrictions")
-            .eq("userId", user_id)
-            .limit(1)
-            .execute()
-        )
-        user_row = (user_res.data[0] if getattr(user_res, "data", None) else {}) or {}
-        ingredient_ids = _as_list(user_row.get("ingredients"))
-        restrictions = _as_list(user_row.get("restrictions"))
-
-        if len(ingredient_ids) == 0:
-            base = (
-                supabase.table("recipes")
-                .select("id, name, website, ingredient_ids, dietary_restrictions")
-                .order("id", desc=False)
-                .limit(limit)
-                .execute()
-            )
-            recipes = base.data or []
-        else:
-            cand = (
-                supabase.table("recipes")
-                .select("id, name, website, ingredient_ids, dietary_restrictions")
-                # PostgREST `ov` expects a Postgres array literal, not JSON.
-                .filter(
-                    "ingredient_ids",
-                    "ov",
-                    "{" + ",".join(str(int(x)) for x in ingredient_ids) + "}",
-                )
-                .limit(2000)
-                .execute()
-            )
-            recipes = cand.data or []
-
-        rows = _score(recipes, ingredient_ids, restrictions)[:limit]
+        recommendations = get_recommendations_for_user(user_id, limit=limit)
+        rows = [
+            {
+                "id": item.id,
+                "name": item.name,
+                "website": item.website,
+                "matchedIngredientCount": item.matched_ingredient_count,
+                "totalIngredientCount": item.total_ingredient_count,
+                "matchPercent": item.match_percent,
+            }
+            for item in recommendations
+        ]
         dt = round((time.time() - t0) * 1000)
         print(
-            f"[recommend] user={user_id} pantry={len(ingredient_ids)} limit={limit} -> {len(rows)} rows in {dt}ms",
+            f"[recommend] user={user_id} limit={limit} -> {len(rows)} rows in {dt}ms",
             flush=True,
         )
         return jsonify(rows)
@@ -339,8 +524,7 @@ def restrictions():
             RESTRICTION_OPTIONS is None
             or (now - RESTRICTION_OPTIONS_TS) > RESTRICTION_OPTIONS_TTL_S
         ):
-            res = supabase.rpc("list_dietary_restrictions", {}).execute()
-            RESTRICTION_OPTIONS = [str(x) for x in (res.data or [])]
+            RESTRICTION_OPTIONS = get_dietary_restriction_options()
             RESTRICTION_OPTIONS_TS = now
 
         return jsonify({"options": RESTRICTION_OPTIONS})

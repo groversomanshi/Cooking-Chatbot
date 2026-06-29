@@ -1,50 +1,51 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { supabase } from "@/lib/supabase/client";
+import { useSession } from "next-auth/react";
 import type { User } from "@/types/user";
 
-function toUser(input: { id: string; email?: string | null } | null): User | null {
-  if (!input) return null;
-  return { id: input.id, email: input.email ?? "" };
+const LOCAL_USER_ID_KEY = "cooking-chatbot:user-id";
+
+function fallbackUuid() {
+  return "10000000-1000-4000-8000-100000000000".replace(/[018]/g, (c) =>
+    (
+      Number(c) ^
+      (crypto.getRandomValues(new Uint8Array(1))[0] & (15 >> (Number(c) / 4)))
+    ).toString(16),
+  );
+}
+
+function getLocalUser(): User {
+  let id = window.localStorage.getItem(LOCAL_USER_ID_KEY);
+  if (!id) {
+    id = crypto.randomUUID?.() ?? fallbackUuid();
+    window.localStorage.setItem(LOCAL_USER_ID_KEY, id);
+  }
+  return { id, email: "local@cooking-chatbot.local" };
 }
 
 export function useAuth() {
-  const [user, setUser] = useState<User | null>(null);
-  const [loading, setLoading] = useState(true);
+  const { data: session, status } = useSession();
+  const [localUser, setLocalUser] = useState<User | null>(null);
+  const sessionUser = session?.user as
+    | ({ email?: string | null } & { id?: string | null })
+    | undefined;
 
   useEffect(() => {
-    let cancelled = false;
-    const safety = setTimeout(() => {
-      if (!cancelled) setLoading(false);
-    }, 5000);
-
-    async function hydrate() {
-      try {
-        const { data, error } = await supabase.auth.getSession();
-        if (cancelled) return;
-        if (error) throw error;
-        setUser(toUser(data.session?.user ?? null));
-      } catch {
-        if (!cancelled) setUser(null);
-      } finally {
-        if (!cancelled) setLoading(false);
-      }
-    }
-
-    hydrate();
-
-    const { data: sub } = supabase.auth.onAuthStateChange((_event, session) => {
-      setUser(toUser(session?.user ?? null));
-      setLoading(false);
+    queueMicrotask(() => {
+      setLocalUser(getLocalUser());
     });
-
-    return () => {
-      cancelled = true;
-      clearTimeout(safety);
-      sub.subscription.unsubscribe();
-    };
   }, []);
 
-  return { user, loading };
+  if (sessionUser?.id) {
+    return {
+      user: {
+        id: sessionUser.id,
+        email: sessionUser.email ?? "",
+      },
+      loading: status === "loading",
+    };
+  }
+
+  return { user: localUser, loading: status === "loading" || !localUser };
 }

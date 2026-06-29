@@ -3,7 +3,7 @@ flask-cors
 python-dotenv
 pillow
 numpy
-supabase
+psycopg2-binary
 
 # PyTorch (CPU build is fine for dev). For GPU, install the matching CUDA
 # build from https://pytorch.org/get-started/locally/ instead.

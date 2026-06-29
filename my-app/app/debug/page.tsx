@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import {
   Alert,
   Box,
@@ -9,171 +9,121 @@ import {
   Divider,
   Paper,
   Stack,
-  TextField,
   Typography,
 } from "@mui/material";
-import { supabase } from "@/lib/supabase/client";
+import { backendFetch } from "@/lib/api/backend";
 
 type ProbeResult = {
-  table: string;
+  endpoint: string;
   ok: boolean;
-  count: number | null;
   sample: unknown;
   error: string | null;
 };
 
-// Tables we'll try to read from to see if anything is there. Add yours here.
-const CANDIDATE_TABLES = ["ingredients", "recipes", "userInfo"];
+const BACKEND =
+  process.env.NEXT_PUBLIC_BACKEND_URL ?? "http://127.0.0.1:5000";
+
+const PROBES = ["/health", "/ingredients?limit=3", "/recipes?limit=3", "/restrictions"];
+
+async function probeEndpoint(endpoint: string): Promise<ProbeResult> {
+  try {
+    const res = await backendFetch(endpoint);
+    return {
+      endpoint,
+      ok: true,
+      sample: await res.json(),
+      error: null,
+    };
+  } catch (e) {
+    return {
+      endpoint,
+      ok: false,
+      sample: null,
+      error: e instanceof Error ? e.message : String(e),
+    };
+  }
+}
 
 export default function DebugPage() {
-  const [envOk, setEnvOk] = useState<boolean | null>(null);
-  const [envUrl, setEnvUrl] = useState<string>("(unset)");
-  const [sessionInfo, setSessionInfo] = useState<string>("checking…");
+  const [backendUrl] = useState(BACKEND);
+  const [googleConfigured, setGoogleConfigured] = useState<boolean | null>(null);
   const [probes, setProbes] = useState<ProbeResult[]>([]);
-  const [customTable, setCustomTable] = useState("");
   const [running, setRunning] = useState(false);
 
-  async function probeTable(table: string): Promise<ProbeResult> {
-    try {
-      const { data, error, count } = await supabase
-        .from(table)
-        .select("*", { count: "exact" })
-        .limit(3);
-      if (error) {
-        return { table, ok: false, count: null, sample: null, error: error.message };
-      }
-      return {
-        table,
-        ok: true,
-        count: count ?? data?.length ?? 0,
-        sample: data ?? [],
-        error: null,
-      };
-    } catch (e) {
-      return {
-        table,
-        ok: false,
-        count: null,
-        sample: null,
-        error: e instanceof Error ? e.message : String(e),
-      };
-    }
-  }
-
-  async function runAllProbes() {
+  const runAllProbes = useCallback(async () => {
     setRunning(true);
-    const results: ProbeResult[] = [];
-    for (const t of CANDIDATE_TABLES) {
-      // eslint-disable-next-line no-await-in-loop
-      const r = await probeTable(t);
-      results.push(r);
-      console.log(`[supabase debug] table "${t}" →`, r);
-    }
+    const results = await Promise.all(PROBES.map((endpoint) => probeEndpoint(endpoint)));
+    results.forEach((result) => {
+      console.log(`[backend debug] ${result.endpoint}`, result);
+    });
     setProbes(results);
     setRunning(false);
-  }
-
-  useEffect(() => {
-    const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
-    const key = process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY;
-    setEnvUrl(url ?? "(unset)");
-    setEnvOk(!!url && !!key);
-    console.log("[supabase debug] env", {
-      NEXT_PUBLIC_SUPABASE_URL: url,
-      hasPublishableKey: !!key,
-    });
-
-    supabase.auth.getSession().then(({ data, error }) => {
-      console.log("[supabase debug] getSession →", { data, error });
-      if (error) {
-        setSessionInfo(`error: ${error.message}`);
-      } else if (data.session) {
-        setSessionInfo(`logged in as ${data.session.user.email ?? data.session.user.id}`);
-      } else {
-        setSessionInfo("no active session (not logged in)");
-      }
-    });
-
-    runAllProbes();
   }, []);
 
-  async function probeCustom() {
-    if (!customTable.trim()) return;
-    const r = await probeTable(customTable.trim());
-    console.log(`[supabase debug] custom table "${customTable}" →`, r);
-    setProbes((prev) => [r, ...prev]);
-  }
+  useEffect(() => {
+    fetch("/api/auth/providers")
+      .then((res) => res.json())
+      .then((providers) => setGoogleConfigured(!!providers.google))
+      .catch(() => setGoogleConfigured(false));
+
+    queueMicrotask(() => {
+      void runAllProbes();
+    });
+  }, [runAllProbes]);
 
   return (
     <Container maxWidth="md" sx={{ py: 4 }}>
       <Stack spacing={3}>
-        <Typography variant="h4">Supabase Debug</Typography>
+        <Typography variant="h4">Backend Debug</Typography>
         <Typography variant="body2" color="text.secondary">
-          Open DevTools console — every probe is logged there too.
+          Database probes go through the Flask backend at <code>{backendUrl}</code>.
+          Auth probes go through Auth.js.
         </Typography>
 
         <Paper sx={{ p: 2 }}>
           <Typography variant="h6" gutterBottom>
-            Environment
+            Backend
           </Typography>
           <Stack spacing={1}>
             <Typography variant="body2">
-              <strong>NEXT_PUBLIC_SUPABASE_URL:</strong> {envUrl}
+              <strong>NEXT_PUBLIC_BACKEND_URL:</strong> {backendUrl}
             </Typography>
-            <Typography variant="body2">
-              <strong>NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY:</strong>{" "}
-              {envOk ? "present" : "MISSING"}
-            </Typography>
-            {envOk === false && (
-              <Alert severity="error">
-                Env vars not loaded. Make sure <code>my-app/.env.local</code> exists and
-                you restarted <code>npm run dev</code>.
-              </Alert>
-            )}
-          </Stack>
-        </Paper>
-
-        <Paper sx={{ p: 2 }}>
-          <Typography variant="h6" gutterBottom>
-            Auth session
-          </Typography>
-          <Typography variant="body2">{sessionInfo}</Typography>
-        </Paper>
-
-        <Paper sx={{ p: 2 }}>
-          <Stack
-            direction={{ xs: "column", sm: "row" }}
-            spacing={2}
-            sx={{
-              alignItems: { sm: "center" },
-              justifyContent: "space-between",
-              mb: 2,
-            }}
-          >
-            <Typography variant="h6">Table probes</Typography>
             <Button
               variant="outlined"
               size="small"
               onClick={runAllProbes}
               disabled={running}
+              sx={{ alignSelf: "flex-start" }}
             >
-              {running ? "Probing…" : "Re-run probes"}
+              {running ? "Probing..." : "Re-run probes"}
             </Button>
           </Stack>
+        </Paper>
 
-          <Stack direction="row" spacing={1} sx={{ mb: 2 }}>
-            <TextField
-              size="small"
-              label="Try another table"
-              value={customTable}
-              onChange={(e) => setCustomTable(e.target.value)}
-              fullWidth
-            />
-            <Button variant="contained" onClick={probeCustom}>
-              Probe
-            </Button>
-          </Stack>
+        <Paper sx={{ p: 2 }}>
+          <Typography variant="h6" gutterBottom>
+            Auth
+          </Typography>
+          <Typography variant="body2" sx={{ mb: 1 }}>
+            Google OAuth:{" "}
+            {googleConfigured === null
+              ? "checking..."
+              : googleConfigured
+                ? "configured"
+                : "not configured"}
+          </Typography>
+          {googleConfigured === false && (
+            <Alert severity="warning">
+              Add <code>AUTH_GOOGLE_ID</code> and <code>AUTH_GOOGLE_SECRET</code>{" "}
+              to <code>my-app/.env.local</code> to enable Google sign-in.
+            </Alert>
+          )}
+        </Paper>
 
+        <Paper sx={{ p: 2 }}>
+          <Typography variant="h6" gutterBottom>
+            Backend Probes
+          </Typography>
           <Divider sx={{ mb: 2 }} />
 
           <Stack spacing={2}>
@@ -182,22 +132,22 @@ export default function DebugPage() {
                 No probes yet.
               </Typography>
             )}
-            {probes.map((p, i) => (
-              <Box key={`${p.table}-${i}`}>
+            {probes.map((probe) => (
+              <Box key={probe.endpoint}>
                 <Typography variant="subtitle2">
-                  <code>{p.table}</code>{" "}
-                  {p.ok ? (
-                    <span style={{ color: "green" }}>OK ({p.count} rows)</span>
+                  <code>{probe.endpoint}</code>{" "}
+                  {probe.ok ? (
+                    <span style={{ color: "green" }}>OK</span>
                   ) : (
                     <span style={{ color: "crimson" }}>error</span>
                   )}
                 </Typography>
-                {p.error && (
+                {probe.error && (
                   <Typography variant="body2" color="error" sx={{ mt: 0.5 }}>
-                    {p.error}
+                    {probe.error}
                   </Typography>
                 )}
-                {p.ok && Array.isArray(p.sample) && p.sample.length > 0 && (
+                {probe.ok && (
                   <Box
                     component="pre"
                     sx={{
@@ -210,7 +160,7 @@ export default function DebugPage() {
                       maxHeight: 240,
                     }}
                   >
-                    {JSON.stringify(p.sample, null, 2)}
+                    {JSON.stringify(probe.sample, null, 2)}
                   </Box>
                 )}
               </Box>

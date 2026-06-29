@@ -1,3 +1,5 @@
+import { backendFetch } from "@/lib/api/backend";
+
 export type RecipeRecommendation = {
   id: number;
   name: string;
@@ -6,37 +8,6 @@ export type RecipeRecommendation = {
   matchedIngredientCount: number;
   totalIngredientCount: number;
 };
-
-const BACKEND =
-  process.env.NEXT_PUBLIC_BACKEND_URL ?? "http://127.0.0.1:5000";
-
-const FETCH_MS = 45_000;
-
-async function backendFetch(path: string): Promise<Response> {
-  let res: Response;
-  try {
-    res = await fetch(`${BACKEND}${path}`, {
-      signal: AbortSignal.timeout(FETCH_MS),
-    });
-  } catch (e) {
-    throw new Error(
-      `Couldn't reach backend at ${BACKEND}. Is it running? (${
-        e instanceof Error ? e.message : String(e)
-      })`,
-    );
-  }
-  if (!res.ok) {
-    let msg = `${path} failed: HTTP ${res.status}`;
-    try {
-      const body = (await res.json()) as { error?: string };
-      if (body.error) msg = body.error;
-    } catch {
-      // not JSON
-    }
-    throw new Error(msg);
-  }
-  return res;
-}
 
 export async function getRecommendationsForUser(
   userId: string,

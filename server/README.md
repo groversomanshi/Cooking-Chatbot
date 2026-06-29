@@ -1,8 +1,9 @@
-# Detection backend
+# Flask backend
 
-Flask + CLIP service that powers `/camera` in the Next.js app. It receives a
-JPEG frame, runs CLIP image encoding against cached text embeddings of every
-row in `public.ingredients`, and returns the best match.
+Flask service that powers database-backed app features and `/camera` detection
+in the Next.js app. It connects to Aiven Postgres with `DATABASE_URL`, caches
+ingredient names for CLIP detection, and exposes recipe/user data endpoints for
+the frontend.
 
 ## Setup (Windows / PowerShell)
 
@@ -17,7 +18,7 @@ pip install --upgrade pip
 pip install -r requirements.txt
 
 Copy-Item .env.example .env
-notepad .env   # fill in SUPABASE_URL and SUPABASE_KEY
+notepad .env   # fill in DATABASE_URL from Aiven
 ```
 
 ## Run
@@ -28,22 +29,45 @@ python app.py
 ```
 
 The server logs the ingredient count on startup. If it says `0 ingredient
-rows returned`, you don't have a `select` policy on `public.ingredients`.
-Fix in Supabase SQL editor:
-
-```sql
-create policy "public read ingredients"
-on public.ingredients for select to anon, authenticated using (true);
-```
+rows returned`, confirm your Aiven database has the imported `public.ingredients`
+table and that `DATABASE_URL` points at the correct database.
 
 ## Endpoints
 
 - `GET /health` — `{ ok, device, ingredients, weightsPath }`
+- `GET /ingredients` — ingredient search and lookup using `q`, `ids`, or `names`
+- `GET /recipes` — recipe list or lookup using `ids`
+- `GET /recipes/<id>` — single recipe lookup
+- `GET|PUT /users/<userId>/pantry` — read/write pantry ingredient IDs
+- `GET|PUT /users/<userId>/restrictions` — read/write dietary restrictions
+- `GET|PUT /users/<userId>/favorites` — read/write favorite recipe IDs
+- `GET /recommend` — Aiven/Postgres-backed recipe recommendations
+- `GET /restrictions` — dietary restriction enum options
 - `POST /detect` — multipart `image` field; returns
   `{ detected: true, ingredientId, name, score }` or
   `{ detected: false, score }`
 - `POST /refresh` — re-fetch the ingredient list and rebuild embeddings (call
   this after seeding new rows in the table)
+
+## Auth
+
+The Next.js app uses Auth.js with Google OAuth and stores auth rows in the same
+Aiven Postgres database. The auth schema is in `server/sql/auth.sql`.
+
+For local Google OAuth, create a Google OAuth web client with this redirect URI:
+
+```text
+http://localhost:3000/api/auth/callback/google
+```
+
+Then set these in `my-app/.env.local`:
+
+```env
+DATABASE_URL=postgres://...
+AUTH_SECRET=...
+AUTH_GOOGLE_ID=...
+AUTH_GOOGLE_SECRET=...
+```
 
 ## Fine-tuned weights
 

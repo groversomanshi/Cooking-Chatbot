@@ -10,29 +10,26 @@ import type { Recipe } from "@/types/recipe";
 
 export default function FavoritesPage() {
   const { user, loading: authLoading } = useAuth();
-  const [recipes, setRecipes] = useState<Recipe[]>([]);
-  const [loading, setLoading] = useState(true);
+  const [favorites, setFavorites] = useState<{
+    userId: string;
+    recipes: Recipe[];
+  } | null>(null);
 
   useEffect(() => {
-    if (authLoading) return;
-    if (!user) {
-      setRecipes([]);
-      setLoading(false);
-      return;
-    }
+    if (authLoading || !user) return;
     let cancelled = false;
-    setLoading(true);
     getFavoriteRecipes(user.id)
       .then((r) => {
-        if (!cancelled) setRecipes(r);
-      })
-      .finally(() => {
-        if (!cancelled) setLoading(false);
+        if (!cancelled) setFavorites({ userId: user.id, recipes: r });
       });
     return () => {
       cancelled = true;
     };
   }, [user, authLoading]);
+
+  const currentFavorites = favorites?.userId === user?.id ? favorites : null;
+  const recipes = currentFavorites?.recipes ?? [];
+  const loading = authLoading || (!!user && !currentFavorites);
 
   return (
     <>

@@ -1,28 +1,27 @@
 import os
-from flask import Flask
-from supabase import create_client, Client
+import psycopg2
+from flask import Flask, jsonify
 from dotenv import load_dotenv
 
-load_dotenv()
+HERE = os.path.dirname(os.path.abspath(__file__))
+ROOT = os.path.abspath(os.path.join(HERE, "..", ".."))
+load_dotenv(os.path.join(ROOT, ".env"))
+load_dotenv(os.path.join(HERE, ".env"), override=True)
 
 app = Flask(__name__)
 
-supabase: Client = create_client(
-    os.environ.get("SUPABASE_URL"),
-    os.environ.get("SUPABASE_KEY")
-)
-
 @app.route('/')
 def index():
-    response = supabase.table('todos').select("*").execute()
-    todos = response.data
+    database_url = os.environ.get("DATABASE_URL")
+    if not database_url:
+        return jsonify({"ok": False, "error": "DATABASE_URL is not set"}), 500
 
-    html = '<h1>Todos</h1><ul>'
-    for todo in todos:
-        html += f'<li>{todo["name"]}</li>'
-    html += '</ul>'
+    with psycopg2.connect(database_url, connect_timeout=5) as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT VERSION()")
+            version = cur.fetchone()[0]
 
-    return html
+    return jsonify({"ok": True, "database": "aiven-postgres", "version": version})
 
 if __name__ == '__main__':
     app.run(debug=True)

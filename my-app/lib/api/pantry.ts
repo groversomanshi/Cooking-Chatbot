@@ -1,4 +1,4 @@
-import { supabase } from "@/lib/supabase/client";
+import { backendFetch } from "@/lib/api/backend";
 import { getIngredientsByIds } from "@/lib/api/ingredients";
 import type { Ingredient } from "@/types/ingredient";
 
@@ -9,27 +9,13 @@ import type { Ingredient } from "@/types/ingredient";
  */
 
 type UserInfoRow = {
-  userId: string;
   ingredients: number[] | null;
 };
 
 /** Make sure a userInfo row exists for this user (returns the current row). */
 async function ensureUserInfo(userId: string): Promise<UserInfoRow> {
-  const { data, error } = await supabase
-    .from("userInfo")
-    .select(`"userId", ingredients`)
-    .eq("userId", userId)
-    .maybeSingle();
-  if (error) throw error;
-  if (data) return data as UserInfoRow;
-
-  const { data: inserted, error: insertErr } = await supabase
-    .from("userInfo")
-    .insert({ userId, ingredients: [] })
-    .select(`"userId", ingredients`)
-    .single();
-  if (insertErr) throw insertErr;
-  return inserted as UserInfoRow;
+  const res = await backendFetch(`/users/${userId}/pantry`);
+  return (await res.json()) as UserInfoRow;
 }
 
 export async function getPantryIngredientIds(userId: string): Promise<number[]> {
@@ -47,11 +33,10 @@ export async function getPantry(userId: string): Promise<Ingredient[]> {
 }
 
 async function writePantry(userId: string, ids: number[]): Promise<void> {
-  const { error } = await supabase
-    .from("userInfo")
-    .update({ ingredients: ids })
-    .eq("userId", userId);
-  if (error) throw error;
+  await backendFetch(`/users/${userId}/pantry`, {
+    method: "PUT",
+    body: JSON.stringify({ ingredients: ids }),
+  });
 }
 
 export async function addIngredientsToPantry(

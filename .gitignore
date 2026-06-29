@@ -9,3 +9,8 @@ saved_pages*
 .DS_Store
 CLAUDE.md
 graphify-out/
+
+# Local secrets/config. Keep examples commit-safe.
+.env
+.env.*
+!.env.example

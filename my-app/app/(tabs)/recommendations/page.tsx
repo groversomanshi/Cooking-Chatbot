@@ -20,35 +20,39 @@ import { useAuth } from "@/hooks/useAuth";
 
 export default function RecommendationsPage() {
   const { user, loading: authLoading } = useAuth();
-  const [recs, setRecs] = useState<RecipeRecommendation[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
+  const [result, setResult] = useState<{
+    userId: string;
+    recs: RecipeRecommendation[];
+    error: string | null;
+  } | null>(null);
 
   useEffect(() => {
-    if (authLoading) return;
-    if (!user) {
-      setLoading(false);
-      return;
-    }
+    if (authLoading || !user) return;
     let cancelled = false;
-    setLoading(true);
-    setError(null);
     getRecommendationsForUser(user.id, 50)
       .then((data) => {
-        if (!cancelled) setRecs(data);
+        if (!cancelled) {
+          setResult({ userId: user.id, recs: data, error: null });
+        }
       })
       .catch((e: unknown) => {
         if (!cancelled) {
-          setError(e instanceof Error ? e.message : "Failed to load recipes");
+          setResult({
+            userId: user.id,
+            recs: [],
+            error: e instanceof Error ? e.message : "Failed to load recipes",
+          });
         }
-      })
-      .finally(() => {
-        if (!cancelled) setLoading(false);
       });
     return () => {
       cancelled = true;
     };
   }, [user, authLoading]);
+
+  const currentResult = result?.userId === user?.id ? result : null;
+  const recs = currentResult?.recs ?? [];
+  const error = currentResult?.error ?? null;
+  const loading = authLoading || (!!user && !currentResult);
 
   return (
     <>

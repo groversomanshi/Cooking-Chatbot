@@ -1,9 +1,6 @@
-import { supabase } from "@/lib/supabase/client";
+import { backendFetch } from "@/lib/api/backend";
 import { getIngredientsByIds } from "@/lib/api/ingredients";
 import type { Recipe } from "@/types/recipe";
-
-const SELECT =
-  "id, name, ingredient_ids, instructions, unfiltered_ingredients, website, dietary_restrictions";
 
 type RecipeRow = {
   id: number;
@@ -30,24 +27,16 @@ function mapRow(row: RecipeRow): Recipe {
 }
 
 export async function getRecommendedRecipes(): Promise<Recipe[]> {
-  // TODO: filter by the user's pantry ingredient_ids once we have a server route.
-  const { data, error } = await supabase
-    .from("recipes")
-    .select(SELECT)
-    .order("id", { ascending: true })
-    .limit(50);
-  if (error) throw error;
-  return (data as RecipeRow[]).map(mapRow);
+  const params = new URLSearchParams({ limit: "50" });
+  const res = await backendFetch(`/recipes?${params.toString()}`);
+  return ((await res.json()) as RecipeRow[]).map(mapRow);
 }
 
 export async function getRecipesByIds(ids: number[]): Promise<Recipe[]> {
   if (ids.length === 0) return [];
-  const { data, error } = await supabase
-    .from("recipes")
-    .select(SELECT)
-    .in("id", ids);
-  if (error) throw error;
-  const rows = (data as RecipeRow[]).map(mapRow);
+  const params = new URLSearchParams({ ids: ids.join(",") });
+  const res = await backendFetch(`/recipes?${params.toString()}`);
+  const rows = ((await res.json()) as RecipeRow[]).map(mapRow);
   // Preserve the order requested by the caller.
   const byId = new Map(rows.map((r) => [r.id, r]));
   return ids.map((id) => byId.get(String(id))).filter((r): r is Recipe => !!r);
@@ -56,15 +45,16 @@ export async function getRecipesByIds(ids: number[]): Promise<Recipe[]> {
 export async function getRecipeById(id: string): Promise<Recipe | null> {
   const numId = Number(id);
   if (!Number.isFinite(numId)) return null;
-  const { data, error } = await supabase
-    .from("recipes")
-    .select(SELECT)
-    .eq("id", numId)
-    .maybeSingle();
-  if (error) throw error;
-  if (!data) return null;
+  let data: RecipeRow;
+  try {
+    const res = await backendFetch(`/recipes/${numId}`);
+    data = (await res.json()) as RecipeRow;
+  } catch (e) {
+    if (e instanceof Error && e.message.includes("recipe not found")) return null;
+    throw e;
+  }
 
-  const recipe = mapRow(data as RecipeRow);
+  const recipe = mapRow(data);
 
   // If the recipe doesn't have unfiltered ingredient strings, fall back to
   // resolving names from ingredient_ids.
@@ -98,13 +88,9 @@ export async function getRecipeById(id: string): Promise<Recipe | null> {
  * caller's saved recipes; the pantry/favorites contexts handle the writes.
  */
 async function getFavoriteIds(userId: string): Promise<number[]> {
-  const { data, error } = await supabase
-    .from("userInfo")
-    .select("favorites")
-    .eq("userId", userId)
-    .maybeSingle();
-  if (error) throw error;
-  return (data?.favorites as number[] | null) ?? [];
+  const res = await backendFetch(`/users/${userId}/favorites`);
+  const data = (await res.json()) as { favorites: number[] | null };
+  return data.favorites ?? [];
 }
 
 export async function isRecipeFavorited(
@@ -118,13 +104,7 @@ export async function isRecipeFavorited(
 }
 
 export async function getFavoriteRecipes(userId: string): Promise<Recipe[]> {
-  const { data, error } = await supabase
-    .from("userInfo")
-    .select("favorites")
-    .eq("userId", userId)
-    .maybeSingle();
-  if (error) throw error;
-  const ids = (data?.favorites as number[] | null) ?? [];
+  const ids = await getFavoriteIds(userId);
   return getRecipesByIds(ids);
 }
 
@@ -136,20 +116,13 @@ export async function toggleFavorite(
   const numId = Number(recipeId);
   if (!Number.isFinite(numId)) throw new Error(`Invalid recipe id: ${recipeId}`);
 
-  const { data, error } = await supabase
-    .from("userInfo")
-    .select("favorites")
-    .eq("userId", userId)
-    .maybeSingle();
-  if (error) throw error;
-
-  const current = (data?.favorites as number[] | null) ?? [];
+  const current = await getFavoriteIds(userId);
   const next = favorited
     ? Array.from(new Set([...current, numId]))
     : current.filter((id) => id !== numId);
 
-  const { error: writeErr } = await supabase
-    .from("userInfo")
-    .upsert({ userId, favorites: next }, { onConflict: "userId" });
-  if (writeErr) throw writeErr;
+  await backendFetch(`/users/${userId}/favorites`, {
+    method: "PUT",
+    body: JSON.stringify({ favorites: next }),
+  });
 }

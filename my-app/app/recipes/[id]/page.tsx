@@ -15,13 +15,14 @@ export default function RecipeDetailPage({
   params: Promise<{ id: string }>;
 }) {
   const { id } = use(params);
-  const [recipe, setRecipe] = useState<Recipe | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
+  const [result, setResult] = useState<{
+    id: string;
+    recipe: Recipe | null;
+    error: string | null;
+  } | null>(null);
 
   useEffect(() => {
     let cancelled = false;
-    setLoading(true);
     getRecipeById(id)
       .then((r) => {
         if (cancelled) return;
@@ -29,20 +30,26 @@ export default function RecipeDetailPage({
           notFound();
           return;
         }
-        setRecipe(r);
+        setResult({ id, recipe: r, error: null });
       })
       .catch((e: unknown) => {
         if (!cancelled) {
-          setError(e instanceof Error ? e.message : "Failed to load recipe");
+          setResult({
+            id,
+            recipe: null,
+            error: e instanceof Error ? e.message : "Failed to load recipe",
+          });
         }
-      })
-      .finally(() => {
-        if (!cancelled) setLoading(false);
       });
     return () => {
       cancelled = true;
     };
   }, [id]);
+
+  const currentResult = result?.id === id ? result : null;
+  const recipe = currentResult?.recipe ?? null;
+  const error = currentResult?.error ?? null;
+  const loading = !currentResult;
 
   if (error) {
     return (

@@ -1,26 +1,30 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Alert, Button, Divider, Stack, Typography } from "@mui/material";
-import { supabase } from "@/lib/supabase/client";
+import { signIn } from "next-auth/react";
 
 export default function GoogleSignInButton({ label = "Continue with Google" }: { label?: string }) {
   const [pending, setPending] = useState(false);
+  const [configured, setConfigured] = useState<boolean | null>(null);
   const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    fetch("/api/auth/providers")
+      .then((res) => res.json())
+      .then((providers) => setConfigured(!!providers.google))
+      .catch(() => setConfigured(false));
+  }, []);
 
   async function handleClick() {
     setError(null);
+    if (!configured) {
+      setError("Google OAuth is not configured yet.");
+      return;
+    }
     setPending(true);
     try {
-      const { error } = await supabase.auth.signInWithOAuth({
-        provider: "google",
-        options: {
-          redirectTo: `${window.location.origin}/auth/callback?next=/hub`,
-        },
-      });
-      if (error) throw error;
-      // On success, the browser is redirected to Google by Supabase, so we
-      // don't reach the next line.
+      await signIn("google", { callbackUrl: "/hub" });
     } catch (e) {
       setError(e instanceof Error ? e.message : "Google sign-in failed");
       setPending(false);
@@ -39,7 +43,7 @@ export default function GoogleSignInButton({ label = "Continue with Google" }: {
 
       <Button
         onClick={handleClick}
-        disabled={pending}
+        disabled={pending || configured === null}
         variant="outlined"
         size="large"
         fullWidth
@@ -66,9 +70,15 @@ export default function GoogleSignInButton({ label = "Continue with Google" }: {
         }
         sx={{ borderRadius: 2, textTransform: "none", fontWeight: 500 }}
       >
-        {pending ? "Redirecting…" : label}
+        {pending ? "Redirecting..." : label}
       </Button>
 
+      {configured === false && (
+        <Alert severity="info">
+          Google OAuth is not configured yet. Add <code>AUTH_GOOGLE_ID</code> and{" "}
+          <code>AUTH_GOOGLE_SECRET</code> to <code>my-app/.env.local</code>.
+        </Alert>
+      )}
       {error && <Alert severity="error">{error}</Alert>}
     </Stack>
   );
