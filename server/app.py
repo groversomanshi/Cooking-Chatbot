@@ -192,22 +192,44 @@ weights_path = None
 if ENABLE_CLIP:
     import torch as torch_lib
     import clip as clip_lib
+    from clip.clip import _transform as clip_transform
+    from clip.model import build_model as clip_build_model
 
     torch = torch_lib
     clip = clip_lib
     device = "cuda" if torch.cuda.is_available() else "cpu"
-    print(f"[clip] loading ViT-B/32 on {device}", flush=True)
-    model, preprocess = clip.load("ViT-B/32", device=device)
 
     weights_path = resolve_clip_weights_path()
     if weights_path:
         print(f"[clip] loading fine-tuned weights from {weights_path}", flush=True)
-        state = torch.load(weights_path, map_location=device)
+        state = torch.load(weights_path, map_location="cpu")
         if isinstance(state, dict) and "state_dict" in state and not any(
             k.startswith("visual.") or k.startswith("transformer.") for k in state.keys()
         ):
             state = state["state_dict"]
-        missing, unexpected = model.load_state_dict(state, strict=False)
+
+        try:
+            # Build the architecture directly from the fine-tuned checkpoint
+            # instead of clip.load(), which would first download and
+            # materialize OpenAI's stock ViT-B/32 weights (~650MB as fp32 on
+            # CPU) only to immediately overwrite them. Skipping that avoids
+            # ~650MB of unnecessary peak memory -- important on small hosts
+            # like Render's free tier.
+            model = clip_build_model(state).to(device)
+            if device == "cpu":
+                model.float()
+            preprocess = clip_transform(model.visual.input_resolution)
+            missing, unexpected = [], []
+            print("[clip] built model directly from fine-tuned checkpoint", flush=True)
+        except Exception as e:
+            print(
+                f"[clip] direct build from checkpoint failed ({e}); "
+                "falling back to stock ViT-B/32 + strict=False load",
+                flush=True,
+            )
+            model, preprocess = clip.load("ViT-B/32", device=device)
+            missing, unexpected = model.load_state_dict(state, strict=False)
+
         if missing:
             print(f"[clip] missing keys: {len(missing)} (sample: {missing[:3]})", flush=True)
         if unexpected:
@@ -217,10 +239,11 @@ if ENABLE_CLIP:
             )
     else:
         print(
-            "[clip] WARN: no fine-tuned weights found; using stock ViT-B/32. "
-            "Set CLIP_WEIGHTS_PATH to override.",
+            "[clip] WARN: no fine-tuned weights found; downloading stock "
+            "ViT-B/32. Set CLIP_WEIGHTS_PATH to override.",
             flush=True,
         )
+        model, preprocess = clip.load("ViT-B/32", device=device)
     model.eval()
 else:
     print("[clip] disabled; set ENABLE_CLIP=true to enable detection.", flush=True)

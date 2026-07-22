@@ -1,7 +1,11 @@
 -r requirements.txt
 
-# PyTorch (CPU build is fine for dev). For GPU, install the matching CUDA
+# PyTorch CPU-only wheels. The default PyPI build pulls in CUDA/NVIDIA
+# packages (much bigger install, more baseline memory) even though we run on
+# CPU. This index has CPU-only builds, which is what small hosts (e.g.
+# Render's free tier) need. For local GPU dev, install the matching CUDA
 # build from https://pytorch.org/get-started/locally/ instead.
+--extra-index-url https://download.pytorch.org/whl/cpu
 torch
 torchvision
 
