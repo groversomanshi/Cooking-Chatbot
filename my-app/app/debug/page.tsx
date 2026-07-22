@@ -115,7 +115,7 @@ export default function DebugPage() {
           {googleConfigured === false && (
             <Alert severity="warning">
               Add <code>AUTH_GOOGLE_ID</code> and <code>AUTH_GOOGLE_SECRET</code>{" "}
-              to <code>my-app/.env.local</code> to enable Google sign-in.
+              to <code>my-app/.env</code> to enable Google sign-in.
             </Alert>
           )}
         </Paper>

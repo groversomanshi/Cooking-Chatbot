@@ -10,7 +10,6 @@ saved_pages*
 CLAUDE.md
 graphify-out/
 
-# Local secrets/config. Keep examples commit-safe.
+# Local secrets/config.
 .env
 .env.*
-!.env.example

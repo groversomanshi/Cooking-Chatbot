@@ -4,11 +4,4 @@ python-dotenv
 pillow
 numpy
 psycopg2-binary
-
-# PyTorch (CPU build is fine for dev). For GPU, install the matching CUDA
-# build from https://pytorch.org/get-started/locally/ instead.
-torch
-torchvision
-
-# OpenAI CLIP — only available from GitHub.
-git+https://github.com/openai/CLIP.git
+gunicorn

@@ -2,8 +2,11 @@ export type DetectResult =
   | { detected: true; ingredientId: number; name: string; score: number }
   | { detected: false; score?: number };
 
+const BACKEND =
+  process.env.NEXT_PUBLIC_BACKEND_URL ?? "http://127.0.0.1:5000";
+
 const ENDPOINT =
-  process.env.NEXT_PUBLIC_DETECT_URL ?? "http://127.0.0.1:5000/detect";
+  process.env.NEXT_PUBLIC_DETECT_URL ?? `${BACKEND.replace(/\/$/, "")}/detect`;
 
 const FETCH_MS = 120_000;
 

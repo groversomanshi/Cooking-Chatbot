@@ -13,14 +13,11 @@ import sys
 import time
 from typing import Optional, Any
 
-import torch
-import clip
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 import psycopg2
 from psycopg2.extras import RealDictCursor
 from dotenv import load_dotenv
-from PIL import Image
 
 from recommender import (
     get_dietary_restriction_options,
@@ -37,8 +34,19 @@ load_dotenv(os.path.join(HERE, ".env"), override=True)
 # ---------------------------------------------------------------------------
 
 DATABASE_URL = os.environ.get("DATABASE_URL")
+ENABLE_CLIP = os.environ.get("ENABLE_CLIP", "false").lower() in {
+    "1",
+    "true",
+    "yes",
+    "on",
+}
 CLIP_THRESHOLD = float(os.environ.get("CLIP_CONFIDENCE_THRESHOLD", "0.2"))
 PORT = int(os.environ.get("PORT", "5000"))
+
+# Fine-tuned CLIP checkpoint hosted on HuggingFace Hub (fallback: local file).
+HF_REPO = os.environ.get("HF_REPO", "cookingchatbot/Cooking-Chatbot")
+HF_FILENAME = os.environ.get("HF_FILENAME", "clip_finetuned_production_final.pth")
+HF_TOKEN = os.environ.get("HF_TOKEN", "")
 
 if not DATABASE_URL:
     sys.exit(
@@ -121,19 +129,50 @@ def update_user_array(user_id: str, column: str, values: list[Any], postgres_typ
             )
 
 
-def find_clip_weights() -> Optional[str]:
-    """Return the first existing path that looks like our fine-tuned .pth."""
+def find_local_clip_weights() -> Optional[str]:
+    """Return the first existing local path that looks like our fine-tuned .pth."""
     here = os.path.dirname(os.path.abspath(__file__))
     candidates = [
         os.environ.get("CLIP_WEIGHTS_PATH"),
-        os.path.join(here, "clip_finetuned_production_final.pth"),
-        os.path.join(here, "..", "my-app", "clip_finetuned_production_final.pth"),
-        os.path.join(here, "..", "clip_finetuned_production_final.pth"),
+        os.path.join(here, HF_FILENAME),
+        os.path.join(here, "..", "my-app", HF_FILENAME),
+        os.path.join(here, "..", HF_FILENAME),
     ]
     for c in candidates:
         if c and os.path.exists(c):
             return os.path.abspath(c)
     return None
+
+
+def resolve_clip_weights_path() -> Optional[str]:
+    """Resolve the fine-tuned CLIP checkpoint path.
+
+    Order of precedence:
+      1. CLIP_WEIGHTS_PATH, if it points at a file that already exists locally.
+      2. Download from the HuggingFace Hub repo (cached after the first run).
+      3. Fall back to a local file (server/, my-app/, or repo root).
+    """
+    override = os.environ.get("CLIP_WEIGHTS_PATH")
+    if override and os.path.exists(override):
+        print(f"[clip] using CLIP_WEIGHTS_PATH override: {override}", flush=True)
+        return os.path.abspath(override)
+
+    try:
+        from huggingface_hub import hf_hub_download
+
+        path = hf_hub_download(
+            repo_id=HF_REPO,
+            filename=HF_FILENAME,
+            token=HF_TOKEN or None,
+        )
+        print(f"[clip] downloaded weights from HuggingFace Hub: {HF_REPO}", flush=True)
+        return path
+    except Exception as e:
+        print(
+            f"[clip] HF Hub download failed ({e}); falling back to a local checkpoint",
+            flush=True,
+        )
+        return find_local_clip_weights()
 
 
 # ---------------------------------------------------------------------------
@@ -143,37 +182,52 @@ def find_clip_weights() -> Optional[str]:
 app = Flask(__name__)
 CORS(app)
 
-device = "cuda" if torch.cuda.is_available() else "cpu"
-print(f"[clip] loading ViT-B/32 on {device}", flush=True)
-model, preprocess = clip.load("ViT-B/32", device=device)
+torch = None
+clip = None
+model = None
+preprocess = None
+device = "disabled"
+weights_path = None
 
-weights_path = find_clip_weights()
-if weights_path:
-    print(f"[clip] loading fine-tuned weights from {weights_path}", flush=True)
-    state = torch.load(weights_path, map_location=device)
-    if isinstance(state, dict) and "state_dict" in state and not any(
-        k.startswith("visual.") or k.startswith("transformer.") for k in state.keys()
-    ):
-        state = state["state_dict"]
-    missing, unexpected = model.load_state_dict(state, strict=False)
-    if missing:
-        print(f"[clip] missing keys: {len(missing)} (sample: {missing[:3]})", flush=True)
-    if unexpected:
+if ENABLE_CLIP:
+    import torch as torch_lib
+    import clip as clip_lib
+
+    torch = torch_lib
+    clip = clip_lib
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    print(f"[clip] loading ViT-B/32 on {device}", flush=True)
+    model, preprocess = clip.load("ViT-B/32", device=device)
+
+    weights_path = resolve_clip_weights_path()
+    if weights_path:
+        print(f"[clip] loading fine-tuned weights from {weights_path}", flush=True)
+        state = torch.load(weights_path, map_location=device)
+        if isinstance(state, dict) and "state_dict" in state and not any(
+            k.startswith("visual.") or k.startswith("transformer.") for k in state.keys()
+        ):
+            state = state["state_dict"]
+        missing, unexpected = model.load_state_dict(state, strict=False)
+        if missing:
+            print(f"[clip] missing keys: {len(missing)} (sample: {missing[:3]})", flush=True)
+        if unexpected:
+            print(
+                f"[clip] unexpected keys: {len(unexpected)} (sample: {unexpected[:3]})",
+                flush=True,
+            )
+    else:
         print(
-            f"[clip] unexpected keys: {len(unexpected)} (sample: {unexpected[:3]})",
+            "[clip] WARN: no fine-tuned weights found; using stock ViT-B/32. "
+            "Set CLIP_WEIGHTS_PATH to override.",
             flush=True,
         )
+    model.eval()
 else:
-    print(
-        "[clip] WARN: no fine-tuned weights found; using stock ViT-B/32. "
-        "Set CLIP_WEIGHTS_PATH to override.",
-        flush=True,
-    )
-model.eval()
+    print("[clip] disabled; set ENABLE_CLIP=true to enable detection.", flush=True)
 
 # Cached ingredient embeddings ----------------------------------------------
 
-INGREDIENT_VECTORS: Optional[torch.Tensor] = None  # [N, D]
+INGREDIENT_VECTORS: Optional[Any] = None  # [N, D]
 INGREDIENT_IDS: list[int] = []
 INGREDIENT_NAMES: list[str] = []
 
@@ -185,6 +239,13 @@ RESTRICTION_OPTIONS_TTL_S = 300.0
 def load_ingredient_embeddings() -> int:
     """Pull every ingredient row from Postgres and cache its CLIP text embedding."""
     global INGREDIENT_VECTORS, INGREDIENT_IDS, INGREDIENT_NAMES
+
+    if not ENABLE_CLIP or clip is None or torch is None or model is None:
+        print("[clip] refresh skipped because CLIP is disabled.", flush=True)
+        INGREDIENT_VECTORS = None
+        INGREDIENT_IDS = []
+        INGREDIENT_NAMES = []
+        return 0
 
     print("[clip] fetching ingredients from Postgres...", flush=True)
     with db_connect() as conn:
@@ -224,7 +285,8 @@ def load_ingredient_embeddings() -> int:
     return len(ids)
 
 
-load_ingredient_embeddings()
+if ENABLE_CLIP:
+    load_ingredient_embeddings()
 
 
 # ---------------------------------------------------------------------------
@@ -238,6 +300,7 @@ def health():
         {
             "ok": True,
             "device": device,
+            "clipEnabled": ENABLE_CLIP,
             "ingredients": len(INGREDIENT_IDS),
             "weightsPath": weights_path,
         }
@@ -246,12 +309,25 @@ def health():
 
 @app.route("/refresh", methods=["POST"])
 def refresh():
+    if not ENABLE_CLIP:
+        return jsonify({"ok": True, "clipEnabled": False, "ingredients": 0})
     n = load_ingredient_embeddings()
     return jsonify({"ok": True, "ingredients": n})
 
 
 @app.route("/detect", methods=["POST"])
 def detect():
+    if not ENABLE_CLIP:
+        return (
+            jsonify(
+                {
+                    "detected": False,
+                    "error": "image detection is disabled on this backend",
+                }
+            ),
+            503,
+        )
+
     if INGREDIENT_VECTORS is None or len(INGREDIENT_IDS) == 0:
         return (
             jsonify({"detected": False, "error": "ingredient cache empty"}),
@@ -263,6 +339,8 @@ def detect():
 
     file = request.files["image"]
     try:
+        from PIL import Image
+
         image = Image.open(file.stream).convert("RGB")
     except Exception as e:
         return jsonify({"error": f"bad image: {e}"}), 400
@@ -535,4 +613,10 @@ def restrictions():
 
 
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=PORT, debug=True)
+    debug = os.environ.get("FLASK_DEBUG", "false").lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+    app.run(host="0.0.0.0", port=PORT, debug=debug)

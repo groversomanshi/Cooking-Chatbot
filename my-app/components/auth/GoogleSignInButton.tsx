@@ -76,7 +76,7 @@ export default function GoogleSignInButton({ label = "Continue with Google" }: {
       {configured === false && (
         <Alert severity="info">
           Google OAuth is not configured yet. Add <code>AUTH_GOOGLE_ID</code> and{" "}
-          <code>AUTH_GOOGLE_SECRET</code> to <code>my-app/.env.local</code>.
+          <code>AUTH_GOOGLE_SECRET</code> to <code>my-app/.env</code>.
         </Alert>
       )}
       {error && <Alert severity="error">{error}</Alert>}
