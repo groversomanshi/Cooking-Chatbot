@@ -44,7 +44,10 @@ CLIP_THRESHOLD = float(os.environ.get("CLIP_CONFIDENCE_THRESHOLD", "0.2"))
 PORT = int(os.environ.get("PORT", "5000"))
 
 # Fine-tuned CLIP checkpoint hosted on HuggingFace Hub (fallback: local file).
+# NOTE: this currently lives in a Space repo, not a Model repo, hence
+# repo_type="space" below -- hf_hub_download defaults to "model" otherwise.
 HF_REPO = os.environ.get("HF_REPO", "cookingchatbot/Cooking-Chatbot")
+HF_REPO_TYPE = os.environ.get("HF_REPO_TYPE", "space")
 HF_FILENAME = os.environ.get("HF_FILENAME", "clip_finetuned_production_final.pth")
 HF_TOKEN = os.environ.get("HF_TOKEN", "")
 
@@ -162,6 +165,7 @@ def resolve_clip_weights_path() -> Optional[str]:
 
         path = hf_hub_download(
             repo_id=HF_REPO,
+            repo_type=HF_REPO_TYPE,
             filename=HF_FILENAME,
             token=HF_TOKEN or None,
         )

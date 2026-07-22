@@ -35,6 +35,8 @@ DATABASE_URL=postgres://avnadmin:password@host.aivencloud.com:12345/defaultdb?ss
 # HuggingFace Hub repo/file that hosts the fine-tuned CLIP checkpoint.
 # Defaults are set in app.py; only override if you're using your own repo.
 # HF_REPO=<your-hf-namespace>/<your-repo>
+# HF_REPO_TYPE=space   # "model", "dataset", or "space" -- must match how
+#                       # the checkpoint is actually hosted on HF Hub.
 # HF_FILENAME=<your-checkpoint-filename>.pth
 
 # Access token for the HF repo (required if the repo is private).
