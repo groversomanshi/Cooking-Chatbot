@@ -192,6 +192,7 @@ model = None
 preprocess = None
 device = "disabled"
 weights_path = None
+MODEL_DTYPE = None
 
 if ENABLE_CLIP:
     import torch as torch_lib
@@ -217,14 +218,35 @@ if ENABLE_CLIP:
             # instead of clip.load(), which would first download and
             # materialize OpenAI's stock ViT-B/32 weights (~650MB as fp32 on
             # CPU) only to immediately overwrite them. Skipping that avoids
-            # ~650MB of unnecessary peak memory -- important on small hosts
-            # like Render's free tier.
+            # a large chunk of unnecessary peak memory -- important on small
+            # hosts like Render's free tier. build_model() also leaves the
+            # model in fp16 by default (convert_weights()); we keep it there
+            # on CPU too (roughly halves resident weight memory vs fp32),
+            # falling back to fp32 only if a smoke-test forward pass shows
+            # this PyTorch build doesn't support fp16 ops on CPU.
             model = clip_build_model(state).to(device)
+            MODEL_DTYPE = torch.float16
+
             if device == "cpu":
-                model.float()
+                try:
+                    with torch.no_grad():
+                        res = model.visual.input_resolution
+                        dummy = torch.zeros(1, 3, res, res, dtype=torch.float16)
+                        model.encode_image(dummy)
+                    print("[clip] running CPU inference in fp16 (lower memory)", flush=True)
+                except Exception as fp16_err:
+                    print(
+                        f"[clip] fp16 CPU inference unsupported ({fp16_err}); "
+                        "using fp32 instead",
+                        flush=True,
+                    )
+                    model.float()
+                    MODEL_DTYPE = torch.float32
+
             preprocess = clip_transform(model.visual.input_resolution)
             missing, unexpected = [], []
             print("[clip] built model directly from fine-tuned checkpoint", flush=True)
+            del state  # raw checkpoint tensors are copied into the model now
         except Exception as e:
             print(
                 f"[clip] direct build from checkpoint failed ({e}); "
@@ -233,6 +255,7 @@ if ENABLE_CLIP:
             )
             model, preprocess = clip.load("ViT-B/32", device=device)
             missing, unexpected = model.load_state_dict(state, strict=False)
+            MODEL_DTYPE = torch.float32
 
         if missing:
             print(f"[clip] missing keys: {len(missing)} (sample: {missing[:3]})", flush=True)
@@ -248,6 +271,7 @@ if ENABLE_CLIP:
             flush=True,
         )
         model, preprocess = clip.load("ViT-B/32", device=device)
+        MODEL_DTYPE = torch.float32
     model.eval()
 else:
     print("[clip] disabled; set ENABLE_CLIP=true to enable detection.", flush=True)
@@ -372,7 +396,7 @@ def detect():
     except Exception as e:
         return jsonify({"error": f"bad image: {e}"}), 400
 
-    inp = preprocess(image).unsqueeze(0).to(device)
+    inp = preprocess(image).unsqueeze(0).to(device=device, dtype=MODEL_DTYPE)
     with torch.no_grad():
         feats = model.encode_image(inp)
         feats = feats / feats.norm(dim=-1, keepdim=True)
