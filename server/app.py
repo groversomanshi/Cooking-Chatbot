@@ -8,10 +8,13 @@ Endpoints:
   POST /refresh   - reload ingredient embeddings from Postgres
 """
 
+import gc
 import os
 import sys
 import time
 from typing import Optional, Any
+
+import numpy as np
 
 from flask import Flask, request, jsonify
 from flask_cors import CORS
@@ -49,7 +52,16 @@ PORT = int(os.environ.get("PORT", "5000"))
 HF_REPO = os.environ.get("HF_REPO", "cookingchatbot/Cooking-Chatbot")
 HF_REPO_TYPE = os.environ.get("HF_REPO_TYPE", "space")
 HF_FILENAME = os.environ.get("HF_FILENAME", "clip_finetuned_production_final.pth")
+HF_EMBEDDINGS_FILENAME = os.environ.get(
+    "HF_EMBEDDINGS_FILENAME", "ingredient_embeddings.npz"
+)
 HF_TOKEN = os.environ.get("HF_TOKEN", "")
+CLIP_LOW_MEMORY = os.environ.get("CLIP_LOW_MEMORY", "true").lower() in {
+    "1",
+    "true",
+    "yes",
+    "on",
+}
 
 if not DATABASE_URL:
     sys.exit(
@@ -179,6 +191,99 @@ def resolve_clip_weights_path() -> Optional[str]:
         return find_local_clip_weights()
 
 
+def resolve_hf_file(filename: str) -> Optional[str]:
+    """Download a file from the configured HF Hub repo, or return a local path."""
+    override_env = f"CLIP_{filename.upper().replace('.', '_')}_PATH"
+    override = os.environ.get(override_env)
+    if override and os.path.exists(override):
+        return os.path.abspath(override)
+
+    local = os.path.join(os.path.dirname(os.path.abspath(__file__)), filename)
+    if os.path.exists(local):
+        return local
+
+    try:
+        from huggingface_hub import hf_hub_download
+
+        path = hf_hub_download(
+            repo_id=HF_REPO,
+            repo_type=HF_REPO_TYPE,
+            filename=filename,
+            token=HF_TOKEN or None,
+        )
+        print(f"[clip] downloaded {filename} from HuggingFace Hub: {HF_REPO}", flush=True)
+        return path
+    except Exception as e:
+        print(f"[clip] could not fetch {filename} from HF Hub ({e})", flush=True)
+        return None
+
+
+def resolve_ingredient_embeddings_path() -> Optional[str]:
+    if not HF_EMBEDDINGS_FILENAME:
+        return None
+    return resolve_hf_file(HF_EMBEDDINGS_FILENAME)
+
+
+def _log_checkpoint_info(path: str, state: dict) -> None:
+    size_mb = os.path.getsize(path) / (1024 * 1024)
+    sample = next((v for v in state.values() if hasattr(v, "dtype")), None)
+    dtype = getattr(sample, "dtype", "unknown")
+    print(f"[clip] checkpoint file: {size_mb:.1f} MB, sample dtype: {dtype}", flush=True)
+
+
+def _load_checkpoint_state(path: str, torch_mod):
+    try:
+        return torch_mod.load(path, map_location="cpu", mmap=True, weights_only=True)
+    except Exception:
+        return torch_mod.load(path, map_location="cpu")
+
+
+def _unwrap_state_dict(state: dict) -> dict:
+    if isinstance(state, dict) and "state_dict" in state and not any(
+        k.startswith("visual.") or k.startswith("transformer.") for k in state.keys()
+    ):
+        return state["state_dict"]
+    return state
+
+
+def drop_text_encoder(model) -> None:
+    """Free the text side of CLIP once ingredient vectors are cached."""
+    for name in (
+        "transformer",
+        "token_embedding",
+        "positional_embedding",
+        "ln_final",
+        "text_projection",
+    ):
+        if name in getattr(model, "_modules", {}):
+            del model._modules[name]
+    gc.collect()
+    print("[clip] dropped text encoder to save memory", flush=True)
+
+
+def optimize_clip_memory(model, torch_mod):
+    """Apply CPU-side memory reductions for small hosts (e.g. Render free tier)."""
+    if not CLIP_LOW_MEMORY or device != "cpu":
+        return model
+
+    model.float()
+    global MODEL_DTYPE
+    MODEL_DTYPE = torch_mod.float32
+
+    try:
+        model = torch_mod.quantization.quantize_dynamic(
+            model,
+            {torch_mod.nn.Linear},
+            dtype=torch_mod.qint8,
+        )
+        print("[clip] applied dynamic int8 quantization to Linear layers", flush=True)
+    except Exception as e:
+        print(f"[clip] dynamic quantization skipped ({e})", flush=True)
+
+    gc.collect()
+    return model
+
+
 # ---------------------------------------------------------------------------
 # Setup
 # ---------------------------------------------------------------------------
@@ -195,6 +300,9 @@ weights_path = None
 MODEL_DTYPE = None
 
 if ENABLE_CLIP:
+    os.environ.setdefault("OMP_NUM_THREADS", "1")
+    os.environ.setdefault("MKL_NUM_THREADS", "1")
+
     import torch as torch_lib
     import clip as clip_lib
     from clip.clip import _transform as clip_transform
@@ -207,23 +315,10 @@ if ENABLE_CLIP:
     weights_path = resolve_clip_weights_path()
     if weights_path:
         print(f"[clip] loading fine-tuned weights from {weights_path}", flush=True)
-        state = torch.load(weights_path, map_location="cpu")
-        if isinstance(state, dict) and "state_dict" in state and not any(
-            k.startswith("visual.") or k.startswith("transformer.") for k in state.keys()
-        ):
-            state = state["state_dict"]
+        state = _unwrap_state_dict(_load_checkpoint_state(weights_path, torch))
+        _log_checkpoint_info(weights_path, state)
 
         try:
-            # Build the architecture directly from the fine-tuned checkpoint
-            # instead of clip.load(), which would first download and
-            # materialize OpenAI's stock ViT-B/32 weights (~650MB as fp32 on
-            # CPU) only to immediately overwrite them. Skipping that avoids
-            # a large chunk of unnecessary peak memory -- important on small
-            # hosts like Render's free tier. build_model() also leaves the
-            # model in fp16 by default (convert_weights()); we keep it there
-            # on CPU too (roughly halves resident weight memory vs fp32),
-            # falling back to fp32 only if a smoke-test forward pass shows
-            # this PyTorch build doesn't support fp16 ops on CPU.
             model = clip_build_model(state).to(device)
             MODEL_DTYPE = torch.float16
 
@@ -246,7 +341,8 @@ if ENABLE_CLIP:
             preprocess = clip_transform(model.visual.input_resolution)
             missing, unexpected = [], []
             print("[clip] built model directly from fine-tuned checkpoint", flush=True)
-            del state  # raw checkpoint tensors are copied into the model now
+            del state
+            gc.collect()
         except Exception as e:
             print(
                 f"[clip] direct build from checkpoint failed ({e}); "
@@ -256,6 +352,8 @@ if ENABLE_CLIP:
             model, preprocess = clip.load("ViT-B/32", device=device)
             missing, unexpected = model.load_state_dict(state, strict=False)
             MODEL_DTYPE = torch.float32
+            del state
+            gc.collect()
 
         if missing:
             print(f"[clip] missing keys: {len(missing)} (sample: {missing[:3]})", flush=True)
@@ -272,6 +370,7 @@ if ENABLE_CLIP:
         )
         model, preprocess = clip.load("ViT-B/32", device=device)
         MODEL_DTYPE = torch.float32
+
     model.eval()
 else:
     print("[clip] disabled; set ENABLE_CLIP=true to enable detection.", flush=True)
@@ -287,8 +386,27 @@ RESTRICTION_OPTIONS: Optional[list[str]] = None
 RESTRICTION_OPTIONS_TS: float = 0.0
 RESTRICTION_OPTIONS_TTL_S = 300.0
 
+def load_ingredient_embeddings_from_npz(path: str) -> int:
+    """Load precomputed ingredient vectors from a .npz file."""
+    global INGREDIENT_VECTORS, INGREDIENT_IDS, INGREDIENT_NAMES
+
+    data = np.load(path, allow_pickle=True)
+    ids = [int(x) for x in data["ids"]]
+    names = [str(x) for x in data["names"]]
+    vectors = np.asarray(data["vectors"], dtype=np.float32)
+
+    INGREDIENT_IDS = ids
+    INGREDIENT_NAMES = names
+    INGREDIENT_VECTORS = vectors
+    print(
+        f"[clip] loaded {len(ids)} precomputed ingredient embeddings from {path}",
+        flush=True,
+    )
+    return len(ids)
+
+
 def load_ingredient_embeddings() -> int:
-    """Pull every ingredient row from Postgres and cache its CLIP text embedding."""
+    """Pull ingredient vectors from a precomputed file or Postgres + CLIP text encoder."""
     global INGREDIENT_VECTORS, INGREDIENT_IDS, INGREDIENT_NAMES
 
     if not ENABLE_CLIP or clip is None or torch is None or model is None:
@@ -297,6 +415,13 @@ def load_ingredient_embeddings() -> int:
         INGREDIENT_IDS = []
         INGREDIENT_NAMES = []
         return 0
+
+    embeddings_path = resolve_ingredient_embeddings_path()
+    if embeddings_path:
+        count = load_ingredient_embeddings_from_npz(embeddings_path)
+        if CLIP_LOW_MEMORY and device == "cpu":
+            drop_text_encoder(model)
+        return count
 
     print("[clip] fetching ingredients from Postgres...", flush=True)
     with db_connect() as conn:
@@ -324,20 +449,29 @@ def load_ingredient_embeddings() -> int:
     ids = [int(r["ingredientId"]) for r in rows]
     prompts = [f"a photo of {n}" for n in names]
 
-    tokens = clip.tokenize(prompts).to(device)
-    with torch.no_grad():
-        feats = model.encode_text(tokens)
-        feats = feats / feats.norm(dim=-1, keepdim=True)
+    batch_size = max(1, int(os.environ.get("CLIP_TEXT_BATCH_SIZE", "32")))
+    feats_chunks = []
+    for start in range(0, len(prompts), batch_size):
+        batch = prompts[start : start + batch_size]
+        tokens = clip.tokenize(batch).to(device)
+        with torch.no_grad():
+            batch_feats = model.encode_text(tokens)
+            batch_feats = batch_feats / batch_feats.norm(dim=-1, keepdim=True)
+        feats_chunks.append(batch_feats.cpu().numpy().astype(np.float32))
 
-    INGREDIENT_VECTORS = feats
+    INGREDIENT_VECTORS = np.concatenate(feats_chunks, axis=0)
     INGREDIENT_IDS = ids
     INGREDIENT_NAMES = names
     print(f"[clip] cached {len(ids)} ingredient embeddings", flush=True)
+
+    if CLIP_LOW_MEMORY and device == "cpu":
+        drop_text_encoder(model)
     return len(ids)
 
 
 if ENABLE_CLIP:
     load_ingredient_embeddings()
+    model = optimize_clip_memory(model, torch)
 
 
 # ---------------------------------------------------------------------------
@@ -401,9 +535,10 @@ def detect():
         feats = model.encode_image(inp)
         feats = feats / feats.norm(dim=-1, keepdim=True)
 
-    sims = (feats @ INGREDIENT_VECTORS.T).squeeze(0)
-    best_idx = int(torch.argmax(sims).item())
-    best_score = float(sims[best_idx].item())
+    feat_vec = feats.squeeze(0).cpu().numpy().astype(np.float32)
+    sims = feat_vec @ INGREDIENT_VECTORS.T
+    best_idx = int(np.argmax(sims))
+    best_score = float(sims[best_idx])
 
     if best_score < CLIP_THRESHOLD:
         return jsonify({"detected": False, "score": best_score})
