@@ -2,3 +2,9 @@
 __pycache__/
 *.pyc
 .env
+
+pixi.lock
+clip_finetuned_production_final.pth
+pixi.toml
+.gitattributes
+ingredient_embeddings.npz
