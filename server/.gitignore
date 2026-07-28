@@ -8,3 +8,4 @@ clip_finetuned_production_final.pth
 pixi.toml
 .gitattributes
 ingredient_embeddings.npz
+visual_encoder.pth
