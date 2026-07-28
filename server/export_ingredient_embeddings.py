@@ -24,6 +24,7 @@ load_dotenv(os.path.join(ROOT, ".env"))
 load_dotenv(os.path.join(HERE, ".env"), override=True)
 
 OUTPUT = os.path.join(HERE, "ingredient_embeddings.npz")
+VISUAL_OUTPUT = os.path.join(HERE, "visual_encoder.pth")
 DATABASE_URL = os.environ.get("DATABASE_URL")
 HF_FILENAME = os.environ.get("HF_FILENAME", "clip_finetuned_production_final.pth")
 
@@ -89,6 +90,11 @@ def main() -> None:
         vectors=vectors,
     )
     print(f"Wrote {len(ids)} ingredient embeddings to {OUTPUT}")
+
+    visual_state = {k: v for k, v in state.items() if k.startswith("visual.")}
+    torch.save(visual_state, VISUAL_OUTPUT)
+    size_mb = os.path.getsize(VISUAL_OUTPUT) / (1024 * 1024)
+    print(f"Wrote visual-only weights ({size_mb:.1f} MB) to {VISUAL_OUTPUT}")
 
 
 if __name__ == "__main__":

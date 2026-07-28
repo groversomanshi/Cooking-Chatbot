@@ -52,11 +52,18 @@ PORT = int(os.environ.get("PORT", "5000"))
 HF_REPO = os.environ.get("HF_REPO", "cookingchatbot/Cooking-Chatbot")
 HF_REPO_TYPE = os.environ.get("HF_REPO_TYPE", "space")
 HF_FILENAME = os.environ.get("HF_FILENAME", "clip_finetuned_production_final.pth")
+HF_VISUAL_FILENAME = os.environ.get("HF_VISUAL_FILENAME", "visual_encoder.pth")
 HF_EMBEDDINGS_FILENAME = os.environ.get(
     "HF_EMBEDDINGS_FILENAME", "ingredient_embeddings.npz"
 )
 HF_TOKEN = os.environ.get("HF_TOKEN", "")
 CLIP_LOW_MEMORY = os.environ.get("CLIP_LOW_MEMORY", "true").lower() in {
+    "1",
+    "true",
+    "yes",
+    "on",
+}
+CLIP_QUANTIZE = os.environ.get("CLIP_QUANTIZE", "false").lower() in {
     "1",
     "true",
     "yes",
@@ -224,6 +231,20 @@ def resolve_ingredient_embeddings_path() -> Optional[str]:
     return resolve_hf_file(HF_EMBEDDINGS_FILENAME)
 
 
+def resolve_visual_weights_path() -> Optional[str]:
+    """Prefer the smaller visual-only checkpoint for low-memory deploys."""
+    return resolve_hf_file(HF_VISUAL_FILENAME)
+
+
+def extract_visual_state(state: dict) -> dict:
+    state = _unwrap_state_dict(state)
+    if any(k.startswith("visual.") for k in state):
+        return {
+            k[len("visual.") :]: v for k, v in state.items() if k.startswith("visual.")
+        }
+    return state
+
+
 def _log_checkpoint_info(path: str, state: dict) -> None:
     size_mb = os.path.getsize(path) / (1024 * 1024)
     sample = next((v for v in state.values() if hasattr(v, "dtype")), None)
@@ -290,7 +311,7 @@ VIT_B32_VISION = {
 }
 
 
-def build_visual_encoder_from_state(visual_state: dict, vision_cls, convert_weights_fn):
+def build_visual_encoder_from_state(visual_state: dict, vision_cls, convert_weights_fn, torch_mod):
     if not visual_state:
         raise ValueError("checkpoint has no visual.* weights")
 
@@ -303,14 +324,19 @@ def build_visual_encoder_from_state(visual_state: dict, vision_cls, convert_weig
         heads=cfg["heads"],
         output_dim=cfg["output_dim"],
     )
-    convert_weights_fn(visual)
-    visual.load_state_dict(visual_state, strict=True)
+
+    sample = next(iter(visual_state.values()))
+    if sample.dtype != torch_mod.float16:
+        convert_weights_fn(visual)
+
+    visual.load_state_dict(visual_state, strict=True, assign=True)
+    gc.collect()
     return VisualOnlyModel(visual.to(device))
 
 
 def optimize_clip_memory(model, torch_mod):
     """Apply CPU-side memory reductions for small hosts (e.g. Render free tier)."""
-    if not CLIP_LOW_MEMORY or device != "cpu":
+    if not CLIP_LOW_MEMORY or device != "cpu" or not CLIP_QUANTIZE:
         return model
 
     target = model.visual if isinstance(model, VisualOnlyModel) else model
@@ -444,6 +470,31 @@ if ENABLE_CLIP:
     os.environ.setdefault("OMP_NUM_THREADS", "1")
     os.environ.setdefault("MKL_NUM_THREADS", "1")
 
+    # Download lightweight artifacts before importing PyTorch (saves peak RAM).
+    embeddings_path = resolve_ingredient_embeddings_path()
+    if embeddings_path:
+        load_ingredient_embeddings_from_npz(embeddings_path)
+
+    weights_path = None
+    using_visual_checkpoint = False
+    if embeddings_path and CLIP_LOW_MEMORY:
+        weights_path = resolve_visual_weights_path()
+        using_visual_checkpoint = bool(weights_path)
+        if weights_path:
+            print(
+                f"[clip] will load visual-only weights from {HF_VISUAL_FILENAME}",
+                flush=True,
+            )
+        else:
+            print(
+                f"[clip] WARN: {HF_VISUAL_FILENAME} not found on HF Hub; "
+                "falling back to full checkpoint (may OOM on Render free tier). "
+                "Re-run export_ingredient_embeddings.py and upload visual_encoder.pth.",
+                flush=True,
+            )
+    if not weights_path:
+        weights_path = resolve_clip_weights_path()
+
     import torch as torch_lib
     import clip as clip_lib
     from clip.clip import _transform as clip_transform
@@ -453,9 +504,8 @@ if ENABLE_CLIP:
     torch = torch_lib
     clip = clip_lib
     device = "cuda" if torch.cuda.is_available() else "cpu"
-
-    embeddings_path = resolve_ingredient_embeddings_path()
     use_visual_only = bool(embeddings_path and CLIP_LOW_MEMORY and device == "cpu")
+
     if CLIP_LOW_MEMORY and device == "cpu" and not embeddings_path:
         print(
             "[clip] WARN: ingredient_embeddings.npz not found on HF Hub. "
@@ -464,30 +514,25 @@ if ENABLE_CLIP:
             flush=True,
         )
 
-    if embeddings_path and use_visual_only:
-        load_ingredient_embeddings_from_npz(embeddings_path)
-
-    weights_path = resolve_clip_weights_path()
     missing: list[str] = []
     unexpected: list[str] = []
 
     if weights_path:
-        print(f"[clip] loading fine-tuned weights from {weights_path}", flush=True)
-        state = _unwrap_state_dict(_load_checkpoint_state(weights_path, torch))
+        print(f"[clip] loading weights from {weights_path}", flush=True)
+        state = _load_checkpoint_state(weights_path, torch)
         _log_checkpoint_info(weights_path, state)
 
         try:
             if use_visual_only:
                 print("[clip] low-memory path: loading visual encoder only", flush=True)
-                visual_state = {
-                    k[len("visual.") :]: v
-                    for k, v in state.items()
-                    if k.startswith("visual.")
-                }
+                visual_state = extract_visual_state(state)
                 del state
                 gc.collect()
                 model = build_visual_encoder_from_state(
-                    visual_state, VisionTransformer, clip_convert_weights
+                    visual_state,
+                    VisionTransformer,
+                    clip_convert_weights,
+                    torch,
                 )
                 del visual_state
                 gc.collect()
@@ -495,6 +540,7 @@ if ENABLE_CLIP:
                 preprocess = clip_transform(VIT_B32_VISION["input_resolution"])
                 print("[clip] built visual-only encoder from fine-tuned checkpoint", flush=True)
             else:
+                state = _unwrap_state_dict(state)
                 model = clip_build_model(state).to(device)
                 MODEL_DTYPE = torch.float16
 
@@ -523,13 +569,15 @@ if ENABLE_CLIP:
             if use_visual_only:
                 raise RuntimeError(
                     f"visual-only checkpoint load failed ({e}). "
-                    "Ensure ingredient_embeddings.npz is uploaded to the HF Space."
+                    "Upload visual_encoder.pth to the HF Space "
+                    "(re-run export_ingredient_embeddings.py)."
                 ) from e
             print(
                 f"[clip] direct build from checkpoint failed ({e}); "
                 "falling back to stock ViT-B/32 + strict=False load",
                 flush=True,
             )
+            state = _unwrap_state_dict(state)
             model, preprocess = clip.load("ViT-B/32", device=device)
             missing, unexpected = model.load_state_dict(state, strict=False)
             MODEL_DTYPE = torch.float32
