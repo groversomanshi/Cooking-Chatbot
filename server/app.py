@@ -261,21 +261,73 @@ def drop_text_encoder(model) -> None:
     print("[clip] dropped text encoder to save memory", flush=True)
 
 
+class VisualOnlyModel:
+    """Image encoder only -- used when ingredient vectors are precomputed."""
+
+    def __init__(self, visual):
+        self.visual = visual
+
+    @property
+    def dtype(self):
+        return self.visual.conv1.weight.dtype
+
+    def encode_image(self, image):
+        return self.visual(image.type(self.dtype))
+
+    def eval(self):
+        self.visual.eval()
+        return self
+
+
+# ViT-B/32 vision tower constants (matches the fine-tuned checkpoint).
+VIT_B32_VISION = {
+    "input_resolution": 224,
+    "patch_size": 32,
+    "width": 768,
+    "layers": 12,
+    "heads": 12,
+    "output_dim": 512,
+}
+
+
+def build_visual_encoder_from_state(visual_state: dict, vision_cls, convert_weights_fn):
+    if not visual_state:
+        raise ValueError("checkpoint has no visual.* weights")
+
+    cfg = VIT_B32_VISION
+    visual = vision_cls(
+        input_resolution=cfg["input_resolution"],
+        patch_size=cfg["patch_size"],
+        width=cfg["width"],
+        layers=cfg["layers"],
+        heads=cfg["heads"],
+        output_dim=cfg["output_dim"],
+    )
+    convert_weights_fn(visual)
+    visual.load_state_dict(visual_state, strict=True)
+    return VisualOnlyModel(visual.to(device))
+
+
 def optimize_clip_memory(model, torch_mod):
     """Apply CPU-side memory reductions for small hosts (e.g. Render free tier)."""
     if not CLIP_LOW_MEMORY or device != "cpu":
         return model
 
-    model.float()
+    target = model.visual if isinstance(model, VisualOnlyModel) else model
+    target.float()
     global MODEL_DTYPE
     MODEL_DTYPE = torch_mod.float32
 
     try:
-        model = torch_mod.quantization.quantize_dynamic(
-            model,
+        target = torch_mod.quantization.quantize_dynamic(
+            target,
             {torch_mod.nn.Linear},
             dtype=torch_mod.qint8,
         )
+        if isinstance(model, VisualOnlyModel):
+            model.visual = target
+        else:
+            model = target
         print("[clip] applied dynamic int8 quantization to Linear layers", flush=True)
     except Exception as e:
         print(f"[clip] dynamic quantization skipped ({e})", flush=True)
@@ -283,108 +335,6 @@ def optimize_clip_memory(model, torch_mod):
     gc.collect()
     return model
 
-
-# ---------------------------------------------------------------------------
-# Setup
-# ---------------------------------------------------------------------------
-
-app = Flask(__name__)
-CORS(app)
-
-torch = None
-clip = None
-model = None
-preprocess = None
-device = "disabled"
-weights_path = None
-MODEL_DTYPE = None
-
-if ENABLE_CLIP:
-    os.environ.setdefault("OMP_NUM_THREADS", "1")
-    os.environ.setdefault("MKL_NUM_THREADS", "1")
-
-    import torch as torch_lib
-    import clip as clip_lib
-    from clip.clip import _transform as clip_transform
-    from clip.model import build_model as clip_build_model
-
-    torch = torch_lib
-    clip = clip_lib
-    device = "cuda" if torch.cuda.is_available() else "cpu"
-
-    weights_path = resolve_clip_weights_path()
-    if weights_path:
-        print(f"[clip] loading fine-tuned weights from {weights_path}", flush=True)
-        state = _unwrap_state_dict(_load_checkpoint_state(weights_path, torch))
-        _log_checkpoint_info(weights_path, state)
-
-        try:
-            model = clip_build_model(state).to(device)
-            MODEL_DTYPE = torch.float16
-
-            if device == "cpu":
-                try:
-                    with torch.no_grad():
-                        res = model.visual.input_resolution
-                        dummy = torch.zeros(1, 3, res, res, dtype=torch.float16)
-                        model.encode_image(dummy)
-                    print("[clip] running CPU inference in fp16 (lower memory)", flush=True)
-                except Exception as fp16_err:
-                    print(
-                        f"[clip] fp16 CPU inference unsupported ({fp16_err}); "
-                        "using fp32 instead",
-                        flush=True,
-                    )
-                    model.float()
-                    MODEL_DTYPE = torch.float32
-
-            preprocess = clip_transform(model.visual.input_resolution)
-            missing, unexpected = [], []
-            print("[clip] built model directly from fine-tuned checkpoint", flush=True)
-            del state
-            gc.collect()
-        except Exception as e:
-            print(
-                f"[clip] direct build from checkpoint failed ({e}); "
-                "falling back to stock ViT-B/32 + strict=False load",
-                flush=True,
-            )
-            model, preprocess = clip.load("ViT-B/32", device=device)
-            missing, unexpected = model.load_state_dict(state, strict=False)
-            MODEL_DTYPE = torch.float32
-            del state
-            gc.collect()
-
-        if missing:
-            print(f"[clip] missing keys: {len(missing)} (sample: {missing[:3]})", flush=True)
-        if unexpected:
-            print(
-                f"[clip] unexpected keys: {len(unexpected)} (sample: {unexpected[:3]})",
-                flush=True,
-            )
-    else:
-        print(
-            "[clip] WARN: no fine-tuned weights found; downloading stock "
-            "ViT-B/32. Set CLIP_WEIGHTS_PATH to override.",
-            flush=True,
-        )
-        model, preprocess = clip.load("ViT-B/32", device=device)
-        MODEL_DTYPE = torch.float32
-
-    model.eval()
-else:
-    print("[clip] disabled; set ENABLE_CLIP=true to enable detection.", flush=True)
-
-# Cached ingredient embeddings ----------------------------------------------
-
-INGREDIENT_VECTORS: Optional[Any] = None  # [N, D]
-INGREDIENT_IDS: list[int] = []
-INGREDIENT_NAMES: list[str] = []
-
-# Cached dietary restriction options
-RESTRICTION_OPTIONS: Optional[list[str]] = None
-RESTRICTION_OPTIONS_TS: float = 0.0
-RESTRICTION_OPTIONS_TTL_S = 300.0
 
 def load_ingredient_embeddings_from_npz(path: str) -> int:
     """Load precomputed ingredient vectors from a .npz file."""
@@ -419,7 +369,7 @@ def load_ingredient_embeddings() -> int:
     embeddings_path = resolve_ingredient_embeddings_path()
     if embeddings_path:
         count = load_ingredient_embeddings_from_npz(embeddings_path)
-        if CLIP_LOW_MEMORY and device == "cpu":
+        if CLIP_LOW_MEMORY and device == "cpu" and hasattr(model, "transformer"):
             drop_text_encoder(model)
         return count
 
@@ -464,14 +414,155 @@ def load_ingredient_embeddings() -> int:
     INGREDIENT_NAMES = names
     print(f"[clip] cached {len(ids)} ingredient embeddings", flush=True)
 
-    if CLIP_LOW_MEMORY and device == "cpu":
+    if CLIP_LOW_MEMORY and device == "cpu" and hasattr(model, "transformer"):
         drop_text_encoder(model)
     return len(ids)
 
 
+# ---------------------------------------------------------------------------
+# Setup
+# ---------------------------------------------------------------------------
+
+app = Flask(__name__)
+CORS(app)
+
+torch = None
+clip = None
+model = None
+preprocess = None
+device = "disabled"
+weights_path = None
+MODEL_DTYPE = None
+
+# Cached ingredient embeddings ----------------------------------------------
+
+INGREDIENT_VECTORS: Optional[Any] = None  # [N, D]
+INGREDIENT_IDS: list[int] = []
+INGREDIENT_NAMES: list[str] = []
+
 if ENABLE_CLIP:
-    load_ingredient_embeddings()
+    os.environ.setdefault("OMP_NUM_THREADS", "1")
+    os.environ.setdefault("MKL_NUM_THREADS", "1")
+
+    import torch as torch_lib
+    import clip as clip_lib
+    from clip.clip import _transform as clip_transform
+    from clip.model import VisionTransformer, build_model as clip_build_model
+    from clip.model import convert_weights as clip_convert_weights
+
+    torch = torch_lib
+    clip = clip_lib
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+
+    embeddings_path = resolve_ingredient_embeddings_path()
+    use_visual_only = bool(embeddings_path and CLIP_LOW_MEMORY and device == "cpu")
+    if CLIP_LOW_MEMORY and device == "cpu" and not embeddings_path:
+        print(
+            "[clip] WARN: ingredient_embeddings.npz not found on HF Hub. "
+            "Render free tier needs this file -- ask your teammate to run "
+            "export_ingredient_embeddings.py and upload it to the Space.",
+            flush=True,
+        )
+
+    if embeddings_path and use_visual_only:
+        load_ingredient_embeddings_from_npz(embeddings_path)
+
+    weights_path = resolve_clip_weights_path()
+    missing: list[str] = []
+    unexpected: list[str] = []
+
+    if weights_path:
+        print(f"[clip] loading fine-tuned weights from {weights_path}", flush=True)
+        state = _unwrap_state_dict(_load_checkpoint_state(weights_path, torch))
+        _log_checkpoint_info(weights_path, state)
+
+        try:
+            if use_visual_only:
+                print("[clip] low-memory path: loading visual encoder only", flush=True)
+                visual_state = {
+                    k[len("visual.") :]: v
+                    for k, v in state.items()
+                    if k.startswith("visual.")
+                }
+                del state
+                gc.collect()
+                model = build_visual_encoder_from_state(
+                    visual_state, VisionTransformer, clip_convert_weights
+                )
+                del visual_state
+                gc.collect()
+                MODEL_DTYPE = torch.float16
+                preprocess = clip_transform(VIT_B32_VISION["input_resolution"])
+                print("[clip] built visual-only encoder from fine-tuned checkpoint", flush=True)
+            else:
+                model = clip_build_model(state).to(device)
+                MODEL_DTYPE = torch.float16
+
+                if device == "cpu":
+                    try:
+                        with torch.no_grad():
+                            res = model.visual.input_resolution
+                            dummy = torch.zeros(1, 3, res, res, dtype=torch.float16)
+                            model.encode_image(dummy)
+                        print("[clip] running CPU inference in fp16 (lower memory)", flush=True)
+                    except Exception as fp16_err:
+                        print(
+                            f"[clip] fp16 CPU inference unsupported ({fp16_err}); "
+                            "using fp32 instead",
+                            flush=True,
+                        )
+                        model.float()
+                        MODEL_DTYPE = torch.float32
+
+                preprocess = clip_transform(model.visual.input_resolution)
+                missing, unexpected = [], []
+                print("[clip] built model directly from fine-tuned checkpoint", flush=True)
+                del state
+                gc.collect()
+        except Exception as e:
+            if use_visual_only:
+                raise RuntimeError(
+                    f"visual-only checkpoint load failed ({e}). "
+                    "Ensure ingredient_embeddings.npz is uploaded to the HF Space."
+                ) from e
+            print(
+                f"[clip] direct build from checkpoint failed ({e}); "
+                "falling back to stock ViT-B/32 + strict=False load",
+                flush=True,
+            )
+            model, preprocess = clip.load("ViT-B/32", device=device)
+            missing, unexpected = model.load_state_dict(state, strict=False)
+            MODEL_DTYPE = torch.float32
+            del state
+            gc.collect()
+
+        if missing:
+            print(f"[clip] missing keys: {len(missing)} (sample: {missing[:3]})", flush=True)
+        if unexpected:
+            print(
+                f"[clip] unexpected keys: {len(unexpected)} (sample: {unexpected[:3]})",
+                flush=True,
+            )
+    else:
+        print(
+            "[clip] WARN: no fine-tuned weights found; downloading stock "
+            "ViT-B/32. Set CLIP_WEIGHTS_PATH to override.",
+            flush=True,
+        )
+        model, preprocess = clip.load("ViT-B/32", device=device)
+        MODEL_DTYPE = torch.float32
+
+    model.eval()
+    if not use_visual_only:
+        load_ingredient_embeddings()
     model = optimize_clip_memory(model, torch)
+else:
+    print("[clip] disabled; set ENABLE_CLIP=true to enable detection.", flush=True)
+
+# Cached dietary restriction options
+RESTRICTION_OPTIONS: Optional[list[str]] = None
+RESTRICTION_OPTIONS_TS: float = 0.0
+RESTRICTION_OPTIONS_TTL_S = 300.0
 
 
 # ---------------------------------------------------------------------------
